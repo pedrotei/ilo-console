@@ -107,6 +107,26 @@ with HPE. Nothing herein is legal advice.
 - Exposes it all to the browser over a WebSocket bridge that streams frames as
   PNG and forwards input.
 
+## Launcher (`launcher/`)
+
+A saved-server list — add/edit/remove named connections (host, username,
+generation, port/SSL) and hit **Connect** to open that server's console,
+instead of typing `--host`/`--user` every time.
+
+```bash
+.venv/bin/python -m launcher.desktop
+# or, in a browser:
+.venv/bin/python -m launcher.bridge --listen 127.0.0.1:8079
+```
+
+It's a thin front end over the existing per-generation apps, not a
+reimplementation: "Connect" spawns the matching `ilo3console`/`ilo100console`
+desktop app or bridge as its own subprocess, pre-filled with the saved
+host/username via the prefill mechanism both already support. **Passwords
+are never saved** — they're typed fresh in that app's own dialog every time.
+Servers are stored locally at `~/.config/ilo-console/servers.json` (or
+`$XDG_CONFIG_HOME/ilo-console/servers.json`).
+
 ## iLO 3 (`ilo3console/`)
 
 - `crypto.py` — RC4 + AES-OFB keystream ciphers

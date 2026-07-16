@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iLO Console Launcher</title>
+<style>
+  :root {
+    --panel: #0b0e10;
+    --panel-2: #12171a;
+    --edge: #232c30;
+    --edge-bright: #33403f;
+    --ink: #cfe3dc;
+    --ink-dim: #6f8079;
+    --amber: #ffb043;
+    --amber-dim: #7a5a24;
+    --red: #ff5064;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(120% 80% at 50% -10%, #14191c 0%, var(--panel) 60%);
+    color: var(--ink);
+    font-family: var(--sans);
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--edge);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  }
+  .brand {
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--amber);
+  }
+  .brand b { color: var(--ink); font-weight: 600; }
+  .rail-spacer { flex: 1; }
+
+  button {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--edge-bright); border-radius: 4px;
+    padding: 8px 13px; cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--amber-dim); color: var(--amber); }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--amber); outline-offset: 1px;
+  }
+  button.primary { border-color: var(--amber-dim); color: var(--amber); }
+  button.primary:hover { background: #1c1409; }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.danger:hover { background: #23090d; }
+
+  main { flex: 1; padding: 22px; max-width: 720px; width: 100%; margin: 0 auto; }
+  .empty {
+    text-align: center; color: var(--ink-dim); font-family: var(--mono);
+    font-size: 12.5px; padding: 60px 20px; border: 1px dashed var(--edge-bright);
+    border-radius: 10px;
+  }
+  .server-list { display: flex; flex-direction: column; gap: 10px; }
+  .server-row {
+    display: flex; align-items: center; gap: 14px;
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--edge-bright); border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .server-info { flex: 1; min-width: 0; }
+  .server-name { font-weight: 600; font-size: 14px; }
+  .server-detail {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
+    margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .badge {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--amber);
+    border: 1px solid var(--amber-dim); border-radius: 3px;
+    padding: 2px 6px; margin-right: 8px;
+  }
+  .server-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+  .toolbar { display: flex; justify-content: flex-end; margin-bottom: 16px; }
+
+  .overlay {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(4,6,7,.82);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+    backdrop-filter: blur(3px);
+  }
+  .overlay[hidden] { display: none; }
+  .dialog {
+    width: min(440px, 100%);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--edge-bright); border-radius: 10px;
+    padding: 26px 26px 22px;
+    box-shadow: 0 30px 80px -40px #000;
+  }
+  .dialog h1 {
+    margin: 0 0 18px; font-family: var(--mono);
+    font-size: 15px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--amber);
+  }
+  label {
+    display: block; font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-dim); margin: 14px 0 5px;
+  }
+  input, select {
+    width: 100%; font-family: var(--mono); font-size: 13px;
+    color: var(--ink); background: #070a0b;
+    border: 1px solid var(--edge-bright); border-radius: 5px;
+    padding: 9px 11px;
+  }
+  .row2 { display: flex; gap: 12px; }
+  .row2 > div { flex: 1; }
+  .checkbox-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 16px;
+  }
+  .checkbox-row input { width: auto; }
+  .checkbox-row label { margin: 0; }
+  .dialog-actions { display: flex; gap: 10px; margin-top: 22px; }
+  .dialog-actions button { flex: 1; padding: 11px; }
+  .err {
+    margin-top: 14px; font-family: var(--mono); font-size: 12px;
+    color: var(--red); min-height: 16px;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand"><b>iLO</b> · CONSOLE LAUNCHER</div>
+    <div class="rail-spacer"></div>
+    <button id="btn-add" class="primary">+ Add server</button>
+  </header>
+
+  <main>
+    <div class="empty" id="empty" hidden>
+      No saved servers yet. Click "+ Add server" to save your first iLO connection.
+    </div>
+    <div class="server-list" id="server-list"></div>
+  </main>
+
+  <template id="server-row-template">
+    <div class="server-row">
+      <div class="server-info">
+        <div class="server-name"><span class="badge"></span><span class="name-text"></span></div>
+        <div class="server-detail"></div>
+      </div>
+      <div class="server-actions">
+        <button type="button" class="btn-connect primary">Connect</button>
+        <button type="button" class="btn-edit">Edit</button>
+        <button type="button" class="btn-delete danger">Delete</button>
+      </div>
+    </div>
+  </template>
+
+  <div class="overlay" id="form-overlay" hidden>
+    <form class="dialog" id="server-form">
+      <h1 id="form-title">Add server</h1>
+      <input type="hidden" id="server-id">
+      <label for="name">Name</label>
+      <input id="name" name="name" placeholder="Lab DL380" autocomplete="off" required>
+      <label for="generation">Controller</label>
+      <select id="generation" name="generation" required>
+        <option value="ilo3">iLO 3</option>
+        <option value="ilo100">iLO 100</option>
+      </select>
+      <label for="host">iLO host</label>
+      <input id="host" name="host" placeholder="hyper1-ilo.internal.example" autocomplete="off" required>
+      <label for="username">Username</label>
+      <input id="username" name="username" placeholder="Administrator" autocomplete="off">
+      <div class="row2">
+        <div>
+          <label for="port">Port <span style="text-transform:none">(optional)</span></label>
+          <input id="port" name="port" placeholder="default" inputmode="numeric">
+        </div>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="ssl" name="ssl">
+        <label for="ssl" style="margin:0">SSL (iLO 100 "kvmssl" session)</label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="form-cancel">Cancel</button>
+        <button class="primary" id="form-save" type="submit">Save</button>
+      </div>
+      <div class="err" id="form-err"></div>
+    </form>
+  </div>
+
+  <div class="overlay" id="confirm-overlay" hidden>
+    <div class="dialog">
+      <h1>Delete server?</h1>
+      <p id="confirm-text" style="color: var(--ink); font-size: 13px;"></p>
+      <div class="dialog-actions">
+        <button type="button" id="confirm-cancel">Cancel</button>
+        <button class="danger" id="confirm-delete" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
