@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iLO 100 Remote Console</title>
+<style>
+  :root {
+    --panel: #0b0e10;
+    --panel-2: #12171a;
+    --edge: #232c30;
+    --edge-bright: #33403f;
+    --ink: #cfe3dc;
+    --ink-dim: #6f8079;
+    --amber: #ffb043;
+    --amber-dim: #7a5a24;
+    --green: #35d07f;
+    --red: #ff5064;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(120% 80% at 50% -10%, #14191c 0%, var(--panel) 60%);
+    color: var(--ink);
+    font-family: var(--sans);
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+
+  header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 10px 16px; border-bottom: 1px solid var(--edge);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  }
+  .brand {
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--amber); white-space: nowrap;
+  }
+  .target {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .rail-spacer { flex: 1; }
+  .tools { display: flex; gap: 8px; align-items: center; }
+  button {
+    font-family: var(--mono); font-size: 12px; color: var(--ink);
+    background: var(--panel-2); border: 1px solid var(--edge-bright);
+    border-radius: 4px; padding: 7px 11px; cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--amber-dim); color: var(--amber); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.danger { border-color: var(--red); color: var(--red); }
+  button.danger:hover:not(:disabled) { background: #23090d; }
+
+  /* -- custom power dropdown (native <select> reads poorly in dark) ---- */
+  .menu-wrap { position: relative; }
+  .menu {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 15;
+    min-width: 190px; padding: 5px;
+    background: var(--panel-2); border: 1px solid var(--edge-bright);
+    border-radius: 6px; box-shadow: 0 18px 44px -22px #000;
+    display: flex; flex-direction: column;
+  }
+  .menu[hidden] { display: none; }
+  .menu button {
+    border: none; background: transparent; text-align: left;
+    padding: 8px 10px; border-radius: 4px;
+  }
+  .menu button:hover { background: #1c2427; color: var(--amber); }
+
+  /* -- confirm modal ---------------------------------------------------- */
+  .dialog.confirm .sub { margin-bottom: 0; color: var(--ink); }
+  .confirm-actions { display: flex; gap: 10px; margin-top: 24px; }
+  .confirm-actions button { flex: 1; padding: 10px; letter-spacing: .04em; }
+
+  /* -- virtual media modal ---------------------------------------------- */
+  .dialog.media { width: min(480px, 100%); }
+  .media-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .media-row select { padding: 8px 10px; font-size: 12px; }
+  .media-row button { white-space: nowrap; padding: 8px 10px; font-size: 11.5px; }
+  .media-path {
+    flex: 1; font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  .media-row-status { justify-content: space-between; margin-bottom: 0; margin-top: 16px; }
+  .media-status { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); }
+  .media-status.ok { color: var(--green); }
+  .media-status.err { color: var(--red); }
+
+  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; overflow: auto; }
+  .screen-wrap {
+    position: relative; border: 1px solid var(--edge-bright); border-radius: 6px;
+    background: #000; box-shadow: 0 0 0 1px #000, 0 24px 60px -30px #000;
+    line-height: 0; max-width: 100%;
+  }
+  canvas { display: block; max-width: 100%; height: auto; image-rendering: pixelated; }
+  .placeholder {
+    font-family: var(--mono); color: var(--ink-dim); text-align: center;
+    padding: 80px 40px; line-height: 1.7;
+  }
+  .placeholder .blink { color: var(--amber); animation: blink 1.1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  footer {
+    border-top: 1px solid var(--edge); background: var(--panel-2);
+    padding: 7px 16px; font-family: var(--mono); font-size: 11px; color: var(--ink-dim);
+    display: flex; gap: 22px; align-items: center;
+  }
+  footer .field b { color: var(--ink); font-weight: 500; }
+  .foot-spacer { flex: 1; }
+  /* status can carry a long error message (e.g. a connection-reset detail) --
+     shrink and ellipsize it instead of wrapping and breaking the footer into
+     multiple lines. min-width:0 is required for a flex child to shrink below
+     its content size at all. */
+  .field-status { flex: 1 1 auto; min-width: 0; white-space: nowrap; }
+  .field-status b {
+    display: inline-block; max-width: 100%; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
+  }
+  .lamps { display: flex; gap: 14px; align-items: center; }
+  .lamp {
+    display: flex; align-items: center; gap: 7px; font-family: var(--mono);
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-dim);
+  }
+  .lamp .dot {
+    width: 9px; height: 9px; border-radius: 50%; background: #1a2124;
+    border: 1px solid var(--edge-bright); transition: background .15s, box-shadow .15s;
+  }
+  .lamp.on .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .lamp.off .dot { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+  .overlay {
+    position: fixed; inset: 0; z-index: 20; background: rgba(4,6,7,.82);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+    backdrop-filter: blur(3px);
+  }
+  .overlay[hidden] { display: none; }
+  .dialog {
+    width: min(420px, 100%); background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--edge-bright); border-radius: 10px; padding: 26px 26px 22px;
+    box-shadow: 0 30px 80px -40px #000;
+  }
+  .dialog h1 {
+    margin: 0 0 4px; font-family: var(--mono); font-size: 15px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--amber);
+  }
+  .dialog p.sub { margin: 0 0 20px; font-size: 12.5px; color: var(--ink-dim); }
+  label {
+    display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--ink-dim); margin: 14px 0 5px;
+  }
+  input {
+    width: 100%; font-family: var(--mono); font-size: 13px; color: var(--ink);
+    background: #070a0b; border: 1px solid var(--edge-bright); border-radius: 5px; padding: 9px 11px;
+  }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .checkrow { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .checkrow input { width: auto; }
+  .checkrow label { margin: 0; }
+  .dialog button.connect {
+    width: 100%; margin-top: 22px; padding: 11px; border-color: var(--amber-dim);
+    color: var(--amber); letter-spacing: 0.12em; text-transform: uppercase;
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  }
+  .dialog button.connect:hover:not(:disabled) { background: #1c1409; }
+  .dialog button.connect:disabled { opacity: .75; cursor: progress; }
+  .spinner {
+    width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--amber-dim);
+    border-top-color: var(--amber); animation: spin .7s linear infinite; display: none;
+  }
+  button.connect.busy .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .err { margin-top: 14px; font-family: var(--mono); font-size: 12px; color: var(--red); min-height: 16px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand"><b>iLO&nbsp;100</b> · REMOTE CONSOLE</div>
+    <div class="target" id="target">not connected</div>
+    <div class="rail-spacer"></div>
+    <div class="tools">
+      <button id="btn-cad" disabled title="Send Ctrl+Alt+Del">Ctrl·Alt·Del</button>
+      <div class="menu-wrap">
+        <button id="btn-power" disabled title="Chassis power control">Power ▾</button>
+        <div class="menu" id="power-menu" hidden>
+          <button type="button" data-power="PowerUp">Power on</button>
+          <button type="button" data-power="PowerCycle">Power cycle</button>
+          <button type="button" data-power="SoftPwrDn">Soft shutdown</button>
+          <button type="button" data-power="HardReset">Hard reset</button>
+          <button type="button" data-power="PowerDown">Power off (hard)</button>
+        </div>
+      </div>
+      <button id="btn-refresh" disabled title="Refresh screen">Refresh</button>
+      <button id="btn-media" disabled title="Virtual media">Media</button>
+      <button id="btn-disconnect" disabled>Disconnect</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="screen-wrap">
+      <canvas id="screen" width="640" height="400" tabindex="0"></canvas>
+      <div class="placeholder" id="placeholder">
+        awaiting video signal<span class="blink">_</span>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span class="field">res <b id="f-res">—</b></span>
+    <span class="field">fps <b id="f-fps">—</b></span>
+    <span class="field">mode <b id="f-mode">—</b></span>
+    <span class="field field-status">status <b id="f-status">idle</b></span>
+    <div class="foot-spacer"></div>
+    <div class="lamps">
+      <div class="lamp" id="lamp-link"><span class="dot"></span>link</div>
+      <div class="lamp" id="lamp-power"><span class="dot"></span>power</div>
+      <div class="lamp" id="lamp-kbd"><span class="dot"></span>kbd</div>
+      <div class="lamp" id="lamp-video"><span class="dot"></span>video</div>
+      <div class="lamp" id="lamp-mouse"><span class="dot"></span>mouse</div>
+    </div>
+  </footer>
+
+  <div class="overlay" id="overlay">
+    <form class="dialog" id="connect-form">
+      <h1>Connect</h1>
+      <p class="sub">Authenticates via the iLO's web login, then opens the
+        console channel — no separate token needed.</p>
+      <label for="host">iLO host</label>
+      <input id="host" name="host" placeholder="hyper4-ilo.internal.example" autocomplete="off" required>
+      <div class="row">
+        <div>
+          <label for="username">Username</label>
+          <input id="username" name="username" placeholder="admin" autocomplete="username" required>
+        </div>
+        <div>
+          <label for="port">Port</label>
+          <input id="port" name="port" placeholder="80" value="80" inputmode="numeric">
+        </div>
+      </div>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <div class="checkrow">
+        <input type="checkbox" id="ssl">
+        <label for="ssl">Use SSL (kvmssl)</label>
+      </div>
+      <button class="connect" type="submit">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="label">Open console</span>
+      </button>
+      <div class="err" id="err"></div>
+    </form>
+  </div>
+
+  <div class="overlay" id="power-modal" hidden>
+    <div class="dialog confirm">
+      <h1>Confirm action</h1>
+      <p class="sub" id="power-modal-text">Confirm this action.</p>
+      <div class="confirm-actions">
+        <button type="button" id="power-cancel">Cancel</button>
+        <button type="button" id="power-confirm" class="danger">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="media-modal" hidden>
+    <div class="dialog media">
+      <h1>Virtual media</h1>
+      <p class="sub">Mount a local disk image, served directly from this app
+        to the iLO. Experimental — see docs/PROTOCOL_ILO100.md's "Virtual
+        media" section.</p>
+      <div class="media-row">
+        <select id="media-type">
+          <option value="11">CD/DVD ISO image</option>
+          <option value="9">Floppy image</option>
+          <option value="13">Hard drive image</option>
+        </select>
+        <button type="button" id="media-browse">Browse…</button>
+      </div>
+      <div class="media-row">
+        <span class="media-path" id="media-path">no file selected</span>
+      </div>
+      <div class="media-row-status">
+        <span class="media-status" id="media-status">not mounted</span>
+        <div style="display:flex; gap:8px;">
+          <button type="button" id="media-mount" disabled>Mount</button>
+          <button type="button" id="media-unmount" disabled>Unmount</button>
+        </div>
+      </div>
+      <div class="confirm-actions">
+        <button type="button" id="media-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

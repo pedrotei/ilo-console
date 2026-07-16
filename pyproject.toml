@@ -1,0 +1,42 @@
+[project]
+name = "ilo-console"
+version = "0.1.0"
+description = "Modern self-contained remote console for HPE iLO 3 and iLO 100"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+ilo3 = ["cryptography>=3.4"]     # AES/legacy-TLS; only needed by ilo3console
+browser = ["websockets>=12"]     # WebSocket bridge for the in-browser UI
+desktop = ["pywebview>=5"]       # native window; connects to the iLO directly
+dev = ["pytest>=7", "cryptography>=3.4", "websockets>=12", "pywebview>=5"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4"]
+
+[tool.pylint.main]
+# Both packages are self-contained protocol implementations for a specific
+# iLO generation, mirroring each other's shape by design -- hence the
+# duplicate-code disable below. The other disables below all fire on
+# intentionally complex wire-protocol/decoder code (state machines with many
+# fields, constructors mirroring wire fields, small single-purpose event/data
+# classes) rather than on code that's actually poorly structured.
+disable = [
+    "duplicate-code",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-instance-attributes",
+    "too-few-public-methods",
+    "too-many-branches",
+    "too-many-statements",
+    "too-many-locals",
+    "too-many-return-statements",
+]
