@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import store
+from . import certmonitor, store
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -122,6 +122,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_file("app.js", "text/javascript; charset=utf-8")
         elif path == "/api/servers":
             self._json(HTTPStatus.OK, store.load_servers())
+        elif path == "/api/cert-status":
+            self._json(HTTPStatus.OK, certmonitor.get_statuses())
         else:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -194,6 +196,7 @@ class _Handler(BaseHTTPRequestHandler):
 def run(host: str, port: int) -> None:
     """Serve the launcher page on ``host``:``port`` until interrupted."""
     _Handler.bind_host = host
+    certmonitor.start()
     with ThreadingHTTPServer((host, port), _Handler) as httpd:
         print(f"iLO console launcher on http://{host}:{port}/")
         httpd.serve_forever()

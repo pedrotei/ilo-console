@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import store
+from . import certmonitor, store
 
 try:
     import webview
@@ -59,6 +59,11 @@ class Api:
         """Persist a new display order for the saved servers."""
         return store.reorder_servers(ordered_ids)
 
+    def get_cert_statuses(self) -> dict:
+        """Return the latest cached iLO 3 certificate-check results, keyed
+        by server id. Background thread refreshes this once a minute."""
+        return certmonitor.get_statuses()
+
     def launch(self, server_id: str) -> dict:
         """Open the given server's console in its own native window.
 
@@ -94,6 +99,7 @@ def main() -> None:
             "pywebview is not installed. Run: pip install pywebview\n"
             "(Linux also needs a WebKitGTK or Qt WebEngine backend.)"
         )
+    certmonitor.start()
     webview.create_window(
         "iLO Console Launcher",
         os.path.join(_WEB_DIR, "index.html"),

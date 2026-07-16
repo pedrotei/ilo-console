@@ -77,10 +77,73 @@ async function apiReorderServers(orderedIds) {
   return data;
 }
 
+async function apiGetCertStatuses() {
+  if (isNative()) return window.pywebview.api.get_cert_statuses();
+  const res = await fetch("/api/cert-status");
+  return res.json();
+}
+
 // -- rendering ----------------------------------------------------------
 
 const GENERATION_LABEL = { ilo3: "iLO 3", ilo100: "iLO 100" };
 let orderEditMode = false;
+let certStatuses = {}; // server id -> latest cached status from certmonitor.py
+
+// "No connection" -- a plain circle-slash, used when the server didn't
+// respond to the check at all (nothing cert-specific to say about it).
+const ICON_DISCONNECTED = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+       stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <line x1="6" y1="6" x2="18" y2="18"/>
+  </svg>`;
+
+// A padlock; ok/warn use the plain closed shape, bad additionally gets a
+// crossing line through it ("broken/insecure") -- same base glyph so the
+// three cert-related states read as a family, distinct from "disconnected".
+function lockIcon(broken) {
+  return `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <rect x="5" y="11" width="14" height="10" rx="2"/>
+      <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+      ${broken ? '<line x1="4" y1="4" x2="20" y2="20"/>' : ""}
+    </svg>`;
+}
+
+function renderCertBadge(node, server) {
+  const badge = node.querySelector(".cert-badge");
+  if (server.generation !== "ilo3") return; // cert monitor only checks iLO 3
+  const status = certStatuses[server.id];
+  if (!status) return; // no result yet (just added, or still waiting on first check)
+  const checkedAt = status.checked_at ? new Date(status.checked_at).toLocaleTimeString() : "?";
+  if (!status.reachable) {
+    badge.className = "cert-badge visible unknown";
+    badge.innerHTML = ICON_DISCONNECTED;
+    badge.title = `Server unreachable (as of ${checkedAt})\n${status.error || ""}`;
+  } else if (status.invalid) {
+    badge.className = "cert-badge visible bad";
+    badge.innerHTML = lockIcon(true);
+    const reason = status.expired ? "expired" : "not yet valid";
+    badge.title =
+      `Certificate ${reason} (as of ${checkedAt})\n` +
+      `Subject: ${status.subject}\nIssuer: ${status.issuer}\n` +
+      `Valid: ${status.not_before} to ${status.not_after}`;
+  } else if (status.days_remaining <= 14) {
+    badge.className = "cert-badge visible warn";
+    badge.innerHTML = lockIcon(false);
+    badge.title =
+      `Certificate expires in ${status.days_remaining} day(s) (as of ${checkedAt})\n` +
+      `Subject: ${status.subject}\nIssuer: ${status.issuer}\nExpires: ${status.not_after}`;
+  } else {
+    badge.className = "cert-badge visible ok";
+    badge.innerHTML = lockIcon(false);
+    badge.title =
+      `Certificate OK -- ${status.days_remaining} day(s) left (as of ${checkedAt})\n` +
+      `Subject: ${status.subject}\nIssuer: ${status.issuer}${status.self_signed ? " (self-signed)" : ""}\n` +
+      `Expires: ${status.not_after}`;
+  }
+}
 
 function renderServers() {
   ui.list.innerHTML = "";
@@ -100,6 +163,7 @@ function renderServers() {
     if (server.ssl) detailParts.push("ssl");
     if (server.has_saved_password) detailParts.push("🔒 password saved");
     node.querySelector(".server-detail").textContent = detailParts.join(" · ");
+    renderCertBadge(node, server);
     node.querySelector(".btn-edit").addEventListener("click", (e) => {
       e.stopPropagation(); // don't also trigger the row's click-to-connect below
       openForm(server);
@@ -312,6 +376,41 @@ ui.confirmDelete.addEventListener("click", async () => {
   }
 });
 
+// -- cert status polling ---------------------------------------------------
+// certmonitor.py re-checks every 60s server-side and caches the result;
+// this just reads that cache, so polling here is cheap (no live network
+// call per poll). Skips the DOM refresh (but keeps the fetched data) while
+// a drag is in flight -- rebuilding the row list mid-drag would cancel the
+// browser's native drag operation out from under the user.
+async function refreshCertStatuses() {
+  try {
+    certStatuses = await apiGetCertStatuses();
+  } catch {
+    return; // same reasoning as loadServers(): too-early native call, ignore
+  }
+  if (dragSourceIndex === null) renderServers();
+}
+
+function allIlo3ServersHaveCertStatus() {
+  return servers.every((s) => s.generation !== "ilo3" || certStatuses[s.id]);
+}
+
+// The backend runs its own first check at launch (see certmonitor.start()),
+// but each server can take up to several seconds (connect timeout) to
+// resolve, and this page's own first poll can easily land before that
+// finishes -- especially since `servers` itself is still loading around the
+// same time. Rather than one eager poll and then a 60s wait for the *next*
+// cycle, retry every couple of seconds until every known iLO 3 server has a
+// result (or we give up after a while and just fall back to the normal
+// interval below).
+async function pollCertStatusesUntilFresh() {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await refreshCertStatuses();
+    if (allIlo3ServersHaveCertStatus()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+}
+
 // -- boot ---------------------------------------------------------------
 // Always both: an eager call (correct immediately in a real browser, where
 // window.pywebview will just never exist) and a pywebviewready-triggered
@@ -320,4 +419,7 @@ ui.confirmDelete.addEventListener("click", async () => {
 // applies win, regardless of exact timing.
 
 window.addEventListener("pywebviewready", loadServers, { once: true });
+window.addEventListener("pywebviewready", pollCertStatusesUntilFresh, { once: true });
 loadServers();
+pollCertStatusesUntilFresh();
+setInterval(refreshCertStatuses, 60000);
