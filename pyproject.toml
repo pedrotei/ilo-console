@@ -11,7 +11,8 @@ dependencies = []
 ilo3 = ["cryptography>=3.4"]     # AES/legacy-TLS; only needed by ilo3console
 browser = ["websockets>=12"]     # WebSocket bridge for the in-browser UI
 desktop = ["pywebview>=5"]       # native window; connects to the iLO directly
-dev = ["pytest>=7", "cryptography>=3.4", "websockets>=12", "pywebview>=5"]
+launcher = ["keyring>=24"]       # OS keyring-backed saved passwords (launcher only)
+dev = ["pytest>=7", "cryptography>=3.4", "websockets>=12", "pywebview>=5", "keyring>=24"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

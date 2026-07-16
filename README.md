@@ -122,10 +122,22 @@ instead of typing `--host`/`--user` every time.
 It's a thin front end over the existing per-generation apps, not a
 reimplementation: "Connect" spawns the matching `ilo3console`/`ilo100console`
 desktop app or bridge as its own subprocess, pre-filled with the saved
-host/username via the prefill mechanism both already support. **Passwords
-are never saved** — they're typed fresh in that app's own dialog every time.
-Servers are stored locally at `~/.config/ilo-console/servers.json` (or
+host/username via the prefill mechanism both already support. Servers are
+stored locally at `~/.config/ilo-console/servers.json` (or
 `$XDG_CONFIG_HOME/ilo-console/servers.json`).
+
+**Passwords are opt-in and never touch disk.** Checking "Save password" on a
+server stores it in the OS keyring (Keychain / Secret Service / Credential
+Manager, via the `keyring` package — install the `launcher` extra) rather
+than the JSON file, which only ever holds a `has_saved_password` flag. A
+saved password is only usable from the **native launcher**
+(`launcher.desktop`): it's handed to the child app via an environment
+variable (not a CLI argument, which `ps` would expose to other local users)
+and that app auto-submits its own connect dialog. The **browser launcher**
+(`launcher.bridge`) never auto-fills a password — the prefill it hands the
+console page is a URL query string, and a password has no business landing
+in browser history or a server access log — so browser-launched consoles
+still prompt for it every time regardless of what's saved.
 
 ## iLO 3 (`ilo3console/`)
 

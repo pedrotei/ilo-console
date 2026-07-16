@@ -268,6 +268,12 @@ def main() -> None:
         prefill["host"] = args.host
     if args.user:
         prefill["user"] = args.user
+    # Set by launcher/desktop.py when it has an OS-keyring-saved password for
+    # this connection; popped immediately so it doesn't linger in our own
+    # environ any longer than it has to.
+    password = os.environ.pop("ILO_CONSOLE_PASSWORD", None)
+    if password:
+        prefill["password"] = password
 
     api = Api(prefill)
     # Sized so a native 1024x768 console fits without scrollbars (canvas + the

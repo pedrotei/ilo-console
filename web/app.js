@@ -63,13 +63,21 @@ let lastFrameAt = 0, fpsEMA = 0;
 
 // -- prefill (native: from Python; browser: from URL query) -----------------
 
-function applyPrefill(host, user) {
+function applyPrefill(host, user, password) {
   if (host) $("host").value = host;
   if (user) $("username").value = user;
+  if (password) {
+    // Only ever reaches here via the native get_prefill() call below (a
+    // saved password from the launcher's OS keyring) -- never from the
+    // browser query string, which would leak it into history/logs.
+    $("password").value = password;
+    ui.form.requestSubmit();
+    return;
+  }
   (host ? (user ? $("password") : $("username")) : $("host")).focus();
 }
 window.addEventListener("pywebviewready", () => {
-  window.pywebview.api.get_prefill().then((p) => applyPrefill(p && p.host, p && p.user));
+  window.pywebview.api.get_prefill().then((p) => applyPrefill(p && p.host, p && p.user, p && p.password));
 }, { once: true });
 if (!isNative()) {
   const q = new URLSearchParams(location.search);

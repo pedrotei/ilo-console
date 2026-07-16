@@ -157,9 +157,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_PUT(self) -> None:
-        """Handle server-edit requests."""
+        """Handle server-edit and reorder requests."""
         path = urlparse(self.path).path
-        if path.startswith("/api/servers/"):
+        if path == "/api/servers/order":
+            try:
+                reordered = store.reorder_servers(self._read_json_body().get("order", []))
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            self._json(HTTPStatus.OK, reordered)
+        elif path.startswith("/api/servers/"):
             server_id = path.removeprefix("/api/servers/")
             try:
                 updated = store.update_server(server_id, self._read_json_body())

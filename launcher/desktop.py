@@ -2,10 +2,14 @@
 a "Connect" button per entry that opens that server's console.
 
 Deliberately doesn't embed the console itself -- "Connect" just launches the
-existing, already-validated `ilo3console.desktop`/`ilo100console.desktop`
-native app as its own subprocess/window, pre-filled with the saved
-host/username (password is always typed fresh; see store.py). This reuses
-those apps completely unmodified.
+existing `ilo3console.desktop`/`ilo100console.desktop` native app as its own
+subprocess/window, pre-filled with the saved host/username. If a password is
+saved for that server (OS keyring, see store.py), it's handed to the child
+process via an environment variable rather than a CLI argument (CLI args are
+visible to other processes on the same machine via ``ps``; env vars aren't,
+short of reading that process's own ``/proc/<pid>/environ``) -- that app then
+auto-submits its own connect dialog. No password is ever written to disk or
+put on a command line.
 """
 
 from __future__ import annotations
@@ -51,12 +55,17 @@ class Api:
         """Delete a saved server entry."""
         return store.remove_server(server_id)
 
+    def reorder_servers(self, ordered_ids: list[str]) -> list[dict]:
+        """Persist a new display order for the saved servers."""
+        return store.reorder_servers(ordered_ids)
+
     def launch(self, server_id: str) -> dict:
         """Open the given server's console in its own native window.
 
         Spawns the existing per-generation desktop app as a detached
-        subprocess, pre-filled with the saved host/username; the password is
-        always typed fresh in that app's own connect dialog.
+        subprocess, pre-filled with the saved host/username. If a password
+        is saved (OS keyring) for this server, it's passed via an env var so
+        that app auto-connects instead of waiting on its own dialog.
         """
         server = store.get_server(server_id)
         if server is None:
@@ -65,10 +74,14 @@ class Api:
         argv = [sys.executable, "-m", module, "--host", server["host"]]
         if server.get("username"):
             argv += ["--user", server["username"]]
+        env = dict(os.environ)
+        password = store.get_password(server_id)
+        if password:
+            env["ILO_CONSOLE_PASSWORD"] = password
         try:
             # Deliberately detached: this window outlives the launcher, no
             # pipes to manage, so there's nothing for a `with` block to clean up.
-            subprocess.Popen(argv, cwd=_REPO_ROOT)  # pylint: disable=consider-using-with
+            subprocess.Popen(argv, cwd=_REPO_ROOT, env=env)  # pylint: disable=consider-using-with
         except OSError as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}

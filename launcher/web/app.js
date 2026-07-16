@@ -9,11 +9,14 @@ const $ = (id) => document.getElementById(id);
 
 const ui = {
   list: $("server-list"), empty: $("empty"), rowTemplate: $("server-row-template"),
-  btnAdd: $("btn-add"),
+  btnAdd: $("btn-add"), btnEditOrder: $("btn-edit-order"),
   formOverlay: $("form-overlay"), form: $("server-form"), formTitle: $("form-title"),
   formErr: $("form-err"), formCancel: $("form-cancel"),
   fServerId: $("server-id"), fName: $("name"), fGeneration: $("generation"),
   fHost: $("host"), fUsername: $("username"), fPort: $("port"), fSsl: $("ssl"),
+  fSavePassword: $("save-password"), fPassword: $("password"),
+  passwordField: $("password-field"), passwordHint: $("password-hint"),
+  dangerZone: $("danger-zone"), btnDelete: $("btn-delete"),
   confirmOverlay: $("confirm-overlay"), confirmText: $("confirm-text"),
   confirmCancel: $("confirm-cancel"), confirmDelete: $("confirm-delete"),
 };
@@ -62,31 +65,137 @@ async function apiLaunch(id) {
   return { ok: true };
 }
 
+async function apiReorderServers(orderedIds) {
+  if (isNative()) return window.pywebview.api.reorder_servers(orderedIds);
+  const res = await fetch("/api/servers/order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order: orderedIds }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "reorder failed");
+  return data;
+}
+
 // -- rendering ----------------------------------------------------------
 
 const GENERATION_LABEL = { ilo3: "iLO 3", ilo100: "iLO 100" };
+let orderEditMode = false;
 
 function renderServers() {
   ui.list.innerHTML = "";
   ui.empty.hidden = servers.length > 0;
-  for (const server of servers) {
+  ui.list.classList.toggle("reordering", orderEditMode);
+  servers.forEach((server, i) => {
     const node = ui.rowTemplate.content.cloneNode(true);
+    const row = node.querySelector(".server-row");
+    const handle = node.querySelector(".drag-handle");
+    row.dataset.index = String(i);
+    handle.draggable = orderEditMode;
     node.querySelector(".badge").textContent = GENERATION_LABEL[server.generation] || server.generation;
     node.querySelector(".name-text").textContent = server.name;
     const detailParts = [server.host];
     if (server.username) detailParts.push(server.username);
     if (server.port) detailParts.push(`port ${server.port}`);
     if (server.ssl) detailParts.push("ssl");
+    if (server.has_saved_password) detailParts.push("🔒 password saved");
     node.querySelector(".server-detail").textContent = detailParts.join(" · ");
     node.querySelector(".btn-connect").addEventListener("click", () => connect(server.id));
     node.querySelector(".btn-edit").addEventListener("click", () => openForm(server));
-    node.querySelector(".btn-delete").addEventListener("click", () => openConfirm(server));
+    wireDragHandlers(row, handle);
     ui.list.appendChild(node);
+  });
+}
+
+ui.btnEditOrder.addEventListener("click", () => {
+  orderEditMode = !orderEditMode;
+  ui.btnEditOrder.textContent = orderEditMode ? "Done" : "Edit Order";
+  ui.btnEditOrder.classList.toggle("active", orderEditMode);
+  renderServers();
+});
+
+// -- drag-and-drop reorder (only active while orderEditMode is on) --------
+
+let dragSourceIndex = null;
+
+function wireDragHandlers(row, handle) {
+  // The handle -- not the row -- is the draggable element. An <svg> icon
+  // inside a draggable row has its own implicit native drag behavior (like
+  // an <img>) that can intercept the gesture before a row-level dragstart
+  // ever fires; scoping `draggable` to the handle itself (with the icon
+  // set pointer-events: none, see CSS) avoids that entirely.
+  handle.addEventListener("dragstart", (e) => {
+    dragSourceIndex = Number(row.dataset.index);
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox requires data to actually be set for the drag to proceed.
+    e.dataTransfer.setData("text/plain", row.dataset.index);
+    // Only the (small) handle is draggable, so the browser's default drag
+    // image would just be that icon -- use the whole row instead, anchored
+    // under the cursor at the point it was actually grabbed. Must happen
+    // before the opacity change below, or the captured image is the faded one.
+    const rowRect = row.getBoundingClientRect();
+    e.dataTransfer.setDragImage(row, e.clientX - rowRect.left, e.clientY - rowRect.top);
+    row.classList.add("dragging");
+  });
+  handle.addEventListener("dragend", () => {
+    row.classList.remove("dragging");
+    for (const el of ui.list.querySelectorAll(".drag-over")) el.classList.remove("drag-over");
+    dragSourceIndex = null;
+  });
+  row.addEventListener("dragenter", (e) => {
+    if (dragSourceIndex === null) return;
+    e.preventDefault();
+  });
+  row.addEventListener("dragover", (e) => {
+    if (dragSourceIndex === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    row.classList.add("drag-over");
+  });
+  row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+  row.addEventListener("drop", (e) => {
+    e.preventDefault();
+    row.classList.remove("drag-over");
+    const targetIndex = Number(row.dataset.index);
+    if (dragSourceIndex === null || targetIndex === dragSourceIndex) return;
+    moveServer(dragSourceIndex, targetIndex);
+  });
+}
+
+async function moveServer(fromIndex, toIndex) {
+  const reordered = servers.slice();
+  const [moved] = reordered.splice(fromIndex, 1);
+  reordered.splice(toIndex, 0, moved);
+  const previous = servers;
+  servers = reordered; // optimistic: re-render immediately, revert on failure
+  renderServers();
+  try {
+    await apiReorderServers(reordered.map((s) => s.id));
+  } catch (err) {
+    servers = previous;
+    renderServers();
+    alert(`Couldn't reorder servers: ${err.message || err}`);
   }
 }
 
+// Boot calls this both eagerly and again on "pywebviewready" (see below) --
+// window.pywebview.api isn't populated yet at the moment this script first
+// runs, so isNative() can't be trusted for that very first call and may
+// wrongly take the fetch() path in native mode. Whichever call *started*
+// last wins, regardless of which happens to *finish* last.
+let loadGeneration = 0;
+
 async function loadServers() {
-  servers = await apiListServers();
+  const gen = ++loadGeneration;
+  let result;
+  try {
+    result = await apiListServers();
+  } catch {
+    return; // likely the too-early native call hitting a nonexistent fetch
+             // target; the pywebviewready-triggered retry will succeed.
+  }
+  if (gen !== loadGeneration) return; // a newer load has already superseded this one
+  servers = result;
   renderServers();
 }
 
@@ -103,9 +212,24 @@ async function connect(id) {
 
 // -- add/edit form --------------------------------------------------------
 
+function updatePasswordFieldVisibility(hasSavedPassword) {
+  ui.passwordField.hidden = !ui.fSavePassword.checked;
+  ui.passwordHint.textContent = hasSavedPassword
+    ? "A password is already saved. Leave blank to keep it, or type a new one to replace it."
+    : "";
+}
+
+ui.fSavePassword.addEventListener("change", () => {
+  updatePasswordFieldVisibility(ui.fSavePassword.dataset.hasSaved === "1");
+});
+
+let editingServer = null;
+
 function openForm(server) {
   ui.formErr.textContent = "";
   ui.form.reset();
+  editingServer = server;
+  ui.dangerZone.hidden = !server;
   if (server) {
     ui.formTitle.textContent = "Edit server";
     ui.fServerId.value = server.id;
@@ -115,10 +239,14 @@ function openForm(server) {
     ui.fUsername.value = server.username || "";
     ui.fPort.value = server.port || "";
     ui.fSsl.checked = !!server.ssl;
+    ui.fSavePassword.checked = !!server.has_saved_password;
+    ui.fSavePassword.dataset.hasSaved = server.has_saved_password ? "1" : "0";
   } else {
     ui.formTitle.textContent = "Add server";
     ui.fServerId.value = "";
+    ui.fSavePassword.dataset.hasSaved = "0";
   }
+  updatePasswordFieldVisibility(ui.fSavePassword.dataset.hasSaved === "1");
   ui.formOverlay.hidden = false;
   ui.fName.focus();
 }
@@ -139,6 +267,8 @@ ui.form.addEventListener("submit", async (e) => {
     username: ui.fUsername.value.trim(),
     port: ui.fPort.value.trim() || null,
     ssl: ui.fSsl.checked,
+    save_password: ui.fSavePassword.checked,
+    password: ui.fPassword.value,
   };
   try {
     await apiSaveServer(fields, ui.fServerId.value || null);
@@ -149,7 +279,7 @@ ui.form.addEventListener("submit", async (e) => {
   }
 });
 
-// -- delete confirm ---------------------------------------------------------
+// -- delete confirm (triggered from the edit dialog's danger zone) --------
 
 function openConfirm(server) {
   deleteTargetId = server.id;
@@ -158,6 +288,9 @@ function openConfirm(server) {
 }
 function closeConfirm() { ui.confirmOverlay.hidden = true; deleteTargetId = null; }
 
+ui.btnDelete.addEventListener("click", () => {
+  if (editingServer) openConfirm(editingServer);
+});
 ui.confirmCancel.addEventListener("click", closeConfirm);
 ui.confirmOverlay.addEventListener("click", (e) => { if (e.target === ui.confirmOverlay) closeConfirm(); });
 ui.confirmDelete.addEventListener("click", async () => {
@@ -165,6 +298,7 @@ ui.confirmDelete.addEventListener("click", async () => {
   try {
     await apiDeleteServer(deleteTargetId);
     closeConfirm();
+    closeForm();
     await loadServers();
   } catch (err) {
     alert(`Couldn't delete server: ${err.message || err}`);
@@ -173,9 +307,11 @@ ui.confirmDelete.addEventListener("click", async () => {
 });
 
 // -- boot ---------------------------------------------------------------
+// Always both: an eager call (correct immediately in a real browser, where
+// window.pywebview will just never exist) and a pywebviewready-triggered
+// retry (correct in native mode, where the API isn't wired up yet at this
+// point). loadServers()'s generation guard makes whichever one actually
+// applies win, regardless of exact timing.
 
-if (isNative()) {
-  window.addEventListener("pywebviewready", loadServers, { once: true });
-} else {
-  loadServers();
-}
+window.addEventListener("pywebviewready", loadServers, { once: true });
+loadServers();
