@@ -78,7 +78,12 @@
     background: linear-gradient(180deg, var(--panel-2), var(--panel));
     border: 1px solid var(--edge-bright); border-radius: 8px;
     padding: 14px 16px;
+    cursor: pointer;
+    transition: border-color .15s;
   }
+  .server-row:hover { border-color: var(--amber-dim); }
+  .server-list.reordering .server-row { cursor: default; }
+  .server-list.reordering .server-row:hover { border-color: var(--edge-bright); }
   .server-info { flex: 1; min-width: 0; }
   .server-name { font-weight: 600; font-size: 14px; }
   .server-detail {
@@ -211,7 +216,6 @@
         <div class="server-detail"></div>
       </div>
       <div class="server-actions">
-        <button type="button" class="btn-connect primary">Connect</button>
         <button type="button" class="btn-edit icon-btn" title="Edit" aria-label="Edit">
           <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 20h9"/>

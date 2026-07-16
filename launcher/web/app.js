@@ -100,8 +100,14 @@ function renderServers() {
     if (server.ssl) detailParts.push("ssl");
     if (server.has_saved_password) detailParts.push("🔒 password saved");
     node.querySelector(".server-detail").textContent = detailParts.join(" · ");
-    node.querySelector(".btn-connect").addEventListener("click", () => connect(server.id));
-    node.querySelector(".btn-edit").addEventListener("click", () => openForm(server));
+    node.querySelector(".btn-edit").addEventListener("click", (e) => {
+      e.stopPropagation(); // don't also trigger the row's click-to-connect below
+      openForm(server);
+    });
+    row.addEventListener("click", () => {
+      if (orderEditMode) return; // reordering: clicking the box shouldn't launch it
+      connect(server.id);
+    });
     wireDragHandlers(row, handle);
     ui.list.appendChild(node);
   });
