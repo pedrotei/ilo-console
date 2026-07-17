@@ -37,7 +37,7 @@ from .client import ILoConsoleClient
 from .png import snapshot_png
 from .session import AuthError
 
-_WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
+_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 
 
 class _Session:

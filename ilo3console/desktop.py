@@ -35,7 +35,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     webview = None
 
-_WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
+_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 
 
 def _apply_input(client: ILoConsoleClient, msg: dict) -> None:

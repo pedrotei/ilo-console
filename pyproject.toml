@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "ilo-console"
 version = "0.1.0"
@@ -7,12 +11,25 @@ license = "MIT"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+ilo-console-launcher = "launcher.desktop:main"
+ilo-console-launcher-web = "launcher.bridge:main"
+ilo3-console = "ilo3console.desktop:main"
+ilo3-console-web = "ilo3console.bridge:main"
+ilo100-console = "ilo100console.desktop:main"
+ilo100-console-web = "ilo100console.bridge:main"
+
 [project.optional-dependencies]
 ilo3 = ["cryptography>=3.4"]     # AES/legacy-TLS; only needed by ilo3console
 browser = ["websockets>=12"]     # WebSocket bridge for the in-browser UI
 desktop = ["pywebview>=5"]       # native window; connects to the iLO directly
 launcher = ["keyring>=24"]       # OS keyring-backed saved passwords (launcher only)
-dev = ["pytest>=7", "cryptography>=3.4", "websockets>=12", "pywebview>=5", "keyring>=24"]
+# Everything above, for a normal end-user install: pipx install ".[all]"
+all = ["ilo-console[ilo3,browser,desktop,launcher]"]
+dev = ["pytest>=7", "ilo-console[ilo3,browser,desktop,launcher]"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ilo3console", "ilo100console", "launcher"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

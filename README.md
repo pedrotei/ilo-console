@@ -223,7 +223,51 @@ Full details, including the legacy-TLS quirk and virtual-media flows, are in
 Full details, including the auth flow, wire framing, and message catalog, are
 in [docs/PROTOCOL_ILO100.md](docs/PROTOCOL_ILO100.md).
 
-## Setup
+## Install (on another machine)
+
+Requires Python 3.10+ already on the target machine — nothing else needs to
+be pre-installed from PyPI (see the system-dependency note below).
+
+```bash
+# From a copy of this repo (e.g. after cloning it there):
+pipx install ".[all]"
+
+# Or straight from GitHub, without cloning it yourself first:
+pipx install "git+https://github.com/pedrotei/ilo-console#egg=ilo-console[all]"
+```
+
+`pipx` builds an isolated venv for the app and puts its commands on `PATH`
+(`pipx install pipx` or your OS package manager if you don't have it yet;
+plain `pip install --user ".[all]"` works too, just without the isolation).
+`[all]` pulls in every optional extra (`cryptography`, `websockets`,
+`pywebview`, `keyring`) — installers wanting only one mode can pick a
+narrower extra combo (`.[ilo3,desktop]` for just the iLO 3 native app, etc.,
+matching the extras defined in `pyproject.toml`).
+
+This installs six commands:
+
+| Command | Runs |
+|---|---|
+| `ilo-console-launcher` | Native launcher (saved-server list) |
+| `ilo-console-launcher-web` | Launcher's browser mode |
+| `ilo3-console` | iLO 3 native console (`--host`/`--user`) |
+| `ilo3-console-web` | iLO 3 browser-mode WebSocket bridge |
+| `ilo100-console` | iLO 100 native console (`--host`/`--user`) |
+| `ilo100-console-web` | iLO 100 browser-mode WebSocket bridge |
+
+**System dependency for the native apps (`ilo-console-launcher`,
+`ilo3-console`, `ilo100-console`):** `pywebview` needs an OS-provided webview
+component that `pip`/`pipx` can't install for you. Windows (10/11) and macOS
+already have theirs (WebView2, WKWebView) — nothing extra to do there. On
+Linux, install WebKitGTK first, e.g. on Debian/Ubuntu:
+`sudo apt install python3-gi gir1.2-webkit2-4.1` (package names vary by
+distro/WebKitGTK version — see
+[pywebview's docs](https://pywebview.flowrl.com/guide/installation.html) if
+that exact package isn't found). The **browser-mode** commands
+(`*-web`) don't need this at all — they're plain HTTP/WebSocket servers you
+open in any browser.
+
+## Setup (working on this repo)
 
 ```bash
 python3 -m venv --system-site-packages .venv
