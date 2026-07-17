@@ -150,12 +150,35 @@ def main() -> None:
         background_color="#0b0e10",
     )
 
-    def _save_geometry() -> None:
-        # Best-effort -- a window that's been minimized/destroyed in an
-        # unusual way shouldn't take the whole app down on exit.
-        with contextlib.suppress(Exception):
-            store.save_window_geometry(window.x, window.y, window.width, window.height)
+    # window.x/.y/.width/.height each block waiting for the GTK (or
+    # equivalent) main loop to hand back a live value -- fine from most
+    # contexts, but events.closing runs *synchronously on that same main
+    # thread* (unlike resized/moved, which run on a worker thread), so
+    # calling them from a closing handler deadlocks the window on close.
+    # Tracking the last-known geometry via resized/moved instead (which
+    # hand the new values straight to the callback, no property access
+    # needed) and just persisting that cache on closing avoids it entirely.
+    last_geometry: dict[str, int | None] = dict(geometry) if geometry else dict.fromkeys(
+        ("x", "y", "width", "height")
+    )
 
+    def _on_resized(width: int, height: int) -> None:
+        last_geometry["width"] = width
+        last_geometry["height"] = height
+
+    def _on_moved(x: int, y: int) -> None:
+        last_geometry["x"] = x
+        last_geometry["y"] = y
+
+    def _save_geometry() -> None:
+        if None in last_geometry.values():
+            return
+        # Best-effort -- shouldn't take the whole app down on exit.
+        with contextlib.suppress(Exception):
+            store.save_window_geometry(**last_geometry)
+
+    window.events.resized += _on_resized
+    window.events.moved += _on_moved
     window.events.closing += _save_geometry
 
     webview.start()
