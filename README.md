@@ -226,25 +226,7 @@ in [docs/PROTOCOL_ILO100.md](docs/PROTOCOL_ILO100.md).
 ## Install (on another machine)
 
 Requires Python 3.10+ already on the target machine — nothing else needs to
-be pre-installed from PyPI (see the system-dependency note below).
-
-```bash
-# From a copy of this repo (e.g. after cloning it there):
-pipx install ".[all]"
-
-# Or straight from GitHub, without cloning it yourself first:
-pipx install "git+https://github.com/pedrotei/ilo-console#egg=ilo-console[all]"
-```
-
-`pipx` builds an isolated venv for the app and puts its commands on `PATH`
-(`pipx install pipx` or your OS package manager if you don't have it yet;
-plain `pip install --user ".[all]"` works too, just without the isolation).
-`[all]` pulls in every optional extra (`cryptography`, `websockets`,
-`pywebview`, `keyring`) — installers wanting only one mode can pick a
-narrower extra combo (`.[ilo3,desktop]` for just the iLO 3 native app, etc.,
-matching the extras defined in `pyproject.toml`).
-
-This installs six commands:
+be pre-installed from PyPI. Installs six commands:
 
 | Command | Runs |
 |---|---|
@@ -255,17 +237,55 @@ This installs six commands:
 | `ilo100-console` | iLO 100 native console (`--host`/`--user`) |
 | `ilo100-console-web` | iLO 100 browser-mode WebSocket bridge |
 
-**System dependency for the native apps (`ilo-console-launcher`,
-`ilo3-console`, `ilo100-console`):** `pywebview` needs an OS-provided webview
-component that `pip`/`pipx` can't install for you. Windows (10/11) and macOS
-already have theirs (WebView2, WKWebView) — nothing extra to do there. On
-Linux, install WebKitGTK first, e.g. on Debian/Ubuntu:
-`sudo apt install python3-gi gir1.2-webkit2-4.1` (package names vary by
-distro/WebKitGTK version — see
+The **native** apps (`ilo-console-launcher`, `ilo3-console`, `ilo100-console`)
+need `pywebview`, which on Linux needs the OS's own GTK/WebKitGTK Python
+bindings — something `pip` cannot install, since they're system packages, not
+PyPI packages. Windows (10/11) and macOS already have their webview component
+built in (WebView2, WKWebView) and need nothing extra. On Linux, install it
+first (Debian/Ubuntu — package names vary by distro/WebKitGTK version, see
 [pywebview's docs](https://pywebview.flowrl.com/guide/installation.html) if
-that exact package isn't found). The **browser-mode** commands
-(`*-web`) don't need this at all — they're plain HTTP/WebSocket servers you
-open in any browser.
+this exact one isn't found):
+
+```bash
+sudo apt install python3-gi gir1.2-webkit2-4.1
+```
+
+**This is why `pipx` doesn't work for the native apps on Linux**, and is the
+one case where a plain venv is required instead: `pipx`'s venvs (like a
+default `python3 -m venv`) are isolated from system site-packages, so even
+with the OS packages above installed, the app still can't see them unless the
+venv is created with `--system-site-packages` — a flag `pipx` has no way to
+pass through. The **browser-mode** commands (`*-web`) don't have this problem
+at all (no `pywebview`/GTK involved — they're plain HTTP/WebSocket servers
+you open in any browser), so `pipx` is fine for those on any OS, and for the
+native apps on Windows/macOS too.
+
+**Linux, for the native apps** — a plain venv with system site-packages,
+anywhere you like (here, `~/apps/ilo-console`):
+
+```bash
+python3 -m venv --system-site-packages ~/apps/ilo-console
+~/apps/ilo-console/bin/pip install "ilo-console[all] @ git+https://github.com/pedrotei/ilo-console"
+```
+
+The commands land in `~/apps/ilo-console/bin/`. Add that directory to `PATH`,
+or symlink the ones you want from somewhere already on it, e.g.
+`ln -s ~/apps/ilo-console/bin/ilo-console-launcher ~/.local/bin/`.
+
+**Everywhere else** (Windows/macOS for anything, or any OS for just the
+`*-web` commands) — `pipx` is simpler and keeps things isolated:
+
+```bash
+pipx install ".[all]"                                                   # from a local clone
+pipx install "ilo-console[all] @ git+https://github.com/pedrotei/ilo-console"  # straight from GitHub
+```
+
+(`pipx install pipx`, or your OS package manager, if you don't have `pipx`
+yet; plain `pip install --user ".[all]"` also works, just without the
+isolation.) `[all]` pulls in every optional extra (`cryptography`,
+`websockets`, `pywebview`, `keyring`) — installers wanting only one mode can
+pick a narrower extra combo (`.[ilo3,desktop]` for just the iLO 3 native app,
+etc., matching the extras defined in `pyproject.toml`).
 
 ## Setup (working on this repo)
 
