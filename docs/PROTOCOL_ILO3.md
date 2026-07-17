@@ -22,6 +22,9 @@ token and connection parameters up front. A standalone Python client must
 instead **log in over HTTPS itself** to obtain the token, then hit the same
 JSON endpoints.
 
+Certificate management (getting a real, CA-signed certificate onto the iLO)
+also lives entirely on connection 1 — no separate transport — see §8.
+
 ## 1. Session token and JSON layer
 
 ### TLS quirk
@@ -384,6 +387,101 @@ and a wizard for creating a blank formatted floppy image file — out of scope;
 users can create an image with any standard tool and mount it via
 `mount_local_image`.
 
+## 8. Certificate management (CSR, import, reset)
+
+Used by the launcher's "Renew via Let's Encrypt" feature
+(`ilo3console/certrenew.py`), over the same HTTPS/JSON session as §1 — no new
+connection type. All three endpoints below were reverse-engineered by
+capturing the iLO's **own web UI** (`admin_security_sslCertCust.html` for the
+CSR/import calls, `info_diagnostics.html` for reset) via browser DevTools
+"Copy as cURL", then confirmed end-to-end against live hardware
+(`hyper1-ilo.internal.teixeiras.cc`, 2026-07-17).
+
+> **This corrects an earlier wrong assumption.** iLO 2/3/4 has a well-known
+> separate scripting interface called RIBCL — raw XML sent over a raw TLS
+> socket to port 443, no HTTP framing, terminated by a NUL byte (how classic
+> tools like `locfg.pl`/`python-hpilo` talk to RILOE/iLO1/2 boards). A first
+> implementation of this feature assumed the same transport for iLO 3.
+> Testing against real hardware disproved it: `openssl s_client` against
+> port 443 with the raw XML got back `HTTP/1.1 405 Method Not Allowed` — this
+> iLO 3 firmware's port 443 is a **plain HTTP(S) server**, full stop, and
+> RIBCL's bare-socket framing simply doesn't apply. Certificate management
+> here goes through the same `/json/*` API as everything else in §1.
+
+### `POST /json/csr` — request/check a CSR
+
+```
+POST /json/csr
+Content-Type: application/json (the browser itself sends
+  "application/x-www-form-urlencoded; charset=UTF-8" here, which is
+  misleading -- the body is JSON either way)
+
+{"country": "US", "state": "Texas", "locality": "Houston",
+ "organization_name": "...", "organization_unit": "...",
+ "common_name": "<ilo fqdn>", "method": "create_csr",
+ "session_key": "<token>"}
+```
+
+The iLO generates an RSA keypair internally and never exposes the private
+key — the CSR is the only thing that comes back. **The exact same request**
+doubles as "start generating" and "check status"; the web UI's own "Generate
+CSR" button just re-sends it when clicked again to poll. Two entirely
+different response shapes depending on state:
+
+- **Still generating** — an **HTTP 500** (not 200) with body
+  `{"message": "JS_CERT_NOT_AVAILABLE", "details": null}`. A plain `urllib`
+  client raises `HTTPError` for this; the body still has to be read and
+  parsed like any other response rather than treated as a real failure.
+- **Ready** — HTTP 200, but a *completely different shape*: the subject
+  fields echoed back (mostly `null`) plus a populated `"csr_pem"` key holding
+  the PEM text (JSON-escaped `\n` line breaks).
+
+`ilo3console.session.ILoSession.request_csr()` implements this;
+`ilo3console.certrenew._poll_for_csr()` re-sends it every few seconds until
+`csr_pem` shows up.
+
+### `POST /json/certificate` — import a signed certificate
+
+```
+POST /json/certificate
+{"method": "import_certificate", "certificate_data": "<PEM>",
+ "session_key": "<token>"}
+```
+
+Two hardware-confirmed quirks:
+
+- **`certificate_data` has a hard 4096-character limit.** Submitting an
+  ACME server's normal leaf+intermediate chain response (what
+  `AcmeClient.download_certificate()` returns) 400s with `Missing '"' at end
+  of string, or string longer than max (4096).` — only the **leaf**
+  certificate fits and needs submitting (`certrenew._leaf_certificate()`
+  strips the chain down to the first `-----BEGIN CERTIFICATE-----` block).
+- **Success returns an empty 200 body** — not JSON, unlike every other
+  `/json/*` endpoint here. `json.loads("")` on it crashes right after the
+  real import already succeeded; `ILoSession.import_certificate()` treats an
+  empty body as success instead.
+
+Importing does **not** restart iLO's HTTPS service on its own (unlike
+RIBCL's `IMPORT_CERTIFICATE`, which does) — the new certificate sits
+installed-but-unserved until an explicit reset (next section). This was also
+only confirmed by testing: the import call succeeded (empty 200) but the live
+served certificate hadn't changed until a manual iLO reset was performed.
+
+### `POST /json/ilo_status` — reset iLO to apply it
+
+```
+POST /json/ilo_status
+{"method": "reset_ilo", "cause": "diags", "session_key": "<token>"}
+```
+
+Captured from `info_diagnostics.html`'s own "Reset" button (`cause: "diags"`
+is whatever tag that page happens to send; the accepted value set isn't
+otherwise documented, so it's kept as-is). Reboots only the iLO management
+processor — the managed server keeps running uninterrupted — and the iLO
+(HTTP, remote console, everything) is unreachable for roughly 30-60s while it
+comes back. `certrenew.renew_certificate()` calls this automatically as the
+final step after a successful import.
+
 ## Implementation status
 
 - [x] `crypto.py` — RC4 + AES-OFB keystreams (verified against RFC 6229 / NIST).
@@ -394,6 +492,11 @@ users can create an image with any standard tool and mount it via
 - [x] `input.py` — keyboard/mouse/power encoding.
 - [x] `client.py` — orchestrator tying the channels + decoder together.
 - [x] `png.py` + `bridge.py` + `web/` — WebSocket bridge and browser front-end.
+- [x] `session.py` `request_csr`/`import_certificate`/`reset_ilo`, `acme.py`,
+      `certrenew.py` — certificate renewal (see §8). **Validated end-to-end
+      against live hardware** (2026-07-17): CSR request, DNS-01 via
+      Cloudflare, ACME issuance, certificate import, and the reset-to-apply
+      step all confirmed working in one live run.
 
 **Unit-verified**: the ciphers against published vectors, every input frame
 byte-for-byte, the handshake state machine, and the DVC decoder's
@@ -401,4 +504,5 @@ colour/cache/command logic plus a 50k-byte fuzz. **Not yet
 validated against live hardware:** the end-to-end auth → encrypted-video path
 and the exact `/json/login_session` request shape both need a real controller.
 `session._do_login` and the DVC bit-layout are the most likely places to need
-adjustment once tested live.
+adjustment once tested live. (Certificate management, §8, *has* been
+validated live — see above — despite the rest of this list predating that.)

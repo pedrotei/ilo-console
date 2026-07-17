@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 def legacy_tls_context() -> ssl.SSLContext:
@@ -282,6 +285,124 @@ class ILoSession:
             ilo_fqdn=data.get("ilo_fqdn"),
             raw=data,
         )
+
+    # -- certificate signing request ---------------------------------------
+    #
+    # Reverse-engineered from the browser's own admin_security_sslCertCust.html
+    # page (captured via DevTools "Copy as cURL"), not the RIBCL XML interface
+    # older HPE scripting tools use -- this iLO's port 443 is a plain HTTP(S)
+    # server that 405s anything that isn't a real HTTP request, so RIBCL's
+    # bare-XML-over-a-raw-socket transport doesn't apply here. The same
+    # request (full subject fields + method="create_csr") doubles as both
+    # "start generating" and "check status"; the web UI itself just re-sends
+    # it when the user manually clicks to check.
+
+    CSR_NOT_AVAILABLE = "JS_CERT_NOT_AVAILABLE"
+
+    def request_csr(
+        self,
+        *,
+        country: str,
+        state: str,
+        locality: str,
+        organization_name: str,
+        organization_unit: str,
+        common_name: str,
+    ) -> dict:
+        """POST ``/json/csr`` and return the parsed response.
+
+        Two entirely different shapes, confirmed against real hardware:
+        while the iLO is still generating the CSR asynchronously, this comes
+        back as an HTTP 500 with body ``{"message": CSR_NOT_AVAILABLE,
+        "details": null}`` (call again after a delay to check); once ready,
+        it's a 200 with the subject fields (mostly null) plus a populated
+        ``"csr_pem"`` key holding the PEM text.
+        """
+        payload = {
+            "country": country,
+            "state": state,
+            "locality": locality,
+            "organization_name": organization_name,
+            "organization_unit": organization_unit,
+            "common_name": common_name,
+            "method": "create_csr",
+            "session_key": self.session_key,
+        }
+        _log.info("Requesting/checking CSR from %s", self.host)
+        try:
+            text = self.post_json("csr", payload)
+        except urllib.error.HTTPError as exc:
+            # The iLO answers "still generating" (CSR_NOT_AVAILABLE) with an
+            # HTTP 500 whose body is still the normal {"message", "details"}
+            # JSON -- not an actual server error, so this is read just like
+            # any other response rather than left to propagate as a crash.
+            text = exc.read().decode("utf-8", "replace")
+            _log.info("CSR response from %s (HTTP %d): %s", self.host, exc.code, text)
+        else:
+            _log.info("CSR response from %s: %s", self.host, text)
+        return json.loads(text)
+
+    def import_certificate(self, certificate_pem: str) -> dict:
+        """POST ``/json/certificate`` to install a certificate signed for a
+        CSR from :meth:`request_csr`.
+
+        Confirmed against real hardware: on success this returns an **empty**
+        200 body (not JSON, unlike every other ``/json/*`` endpoint here) --
+        treated as success rather than a JSON-parse crash. The failure-case
+        shape is still unconfirmed.
+
+        Unlike RIBCL's ``IMPORT_CERTIFICATE``, this does **not** restart
+        iLO's HTTPS service on its own -- also confirmed against real
+        hardware (the newly-imported cert wasn't actually served until an
+        explicit :meth:`reset_ilo`). Call that afterward to make the new
+        certificate take effect.
+        """
+        payload = {
+            "method": "import_certificate",
+            "certificate_data": certificate_pem,
+            "session_key": self.session_key,
+        }
+        # Certificates aren't secret -- a cert is exactly what the server
+        # already hands every client during the TLS handshake -- so this is
+        # safe to log in full, unlike the credentials used elsewhere here.
+        _log.info("Importing certificate into %s:\n%s", self.host, certificate_pem)
+        try:
+            text = self.post_json("certificate", payload)
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            _log.info(
+                "Certificate import response from %s (HTTP %d): %r", self.host, exc.code, text
+            )
+        else:
+            _log.info("Certificate import response from %s: %r", self.host, text)
+        if not text.strip():
+            return {"message": "success", "raw": ""}
+        return json.loads(text)
+
+    def reset_ilo(self, *, cause: str = "diags") -> dict:
+        """POST ``/json/ilo_status`` to reboot the iLO management processor
+        itself (not the host server -- that keeps running uninterrupted).
+
+        Captured from ``info_diagnostics.html``'s own "Reset" action via
+        browser devtools; ``cause`` is whatever tag that page sent
+        (``"diags"``) and is kept as the default since the accepted values
+        aren't otherwise documented. Needed after :meth:`import_certificate`
+        to actually apply a newly-imported certificate. This session (and
+        any other open ``/json/*`` session) drops once the reset lands --
+        the iLO is unreachable for roughly 30-60s while it reboots.
+        """
+        payload = {"method": "reset_ilo", "cause": cause, "session_key": self.session_key}
+        _log.info("Resetting iLO %s (cause=%s)", self.host, cause)
+        try:
+            text = self.post_json("ilo_status", payload)
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            _log.info("Reset response from %s (HTTP %d): %r", self.host, exc.code, text)
+        else:
+            _log.info("Reset response from %s: %r", self.host, text)
+        if not text.strip():
+            return {"message": "success", "raw": ""}
+        return json.loads(text)
 
     def logout(self) -> None:
         """Best-effort session teardown."""

@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 GENERATIONS = ("ilo3", "ilo100")
 _KEYRING_SERVICE = "ilo-console"
+_CLOUDFLARE_TOKEN_ID = "cloudflare-api-token"
 
 
 def _require_keyring() -> Any:
@@ -60,6 +61,63 @@ def _config_dir() -> Path:
 
 def _store_path() -> Path:
     return _config_dir() / "servers.json"
+
+
+def _acme_settings_path() -> Path:
+    return _config_dir() / "acme_settings.json"
+
+
+def acme_account_key_path() -> Path:
+    """Where the ACME account's private key is persisted (created on first
+    use by ``ilo3console.acme.AcmeAccountKey.load_or_create``)."""
+    return _config_dir() / "acme_account_key.pem"
+
+
+def get_cloudflare_token() -> str | None:
+    """Return the saved Cloudflare API token, or None if none is saved."""
+    if keyring is None:
+        return None
+    return keyring.get_password(_KEYRING_SERVICE, _CLOUDFLARE_TOKEN_ID)
+
+
+def set_cloudflare_token(token: str) -> None:
+    """Save the Cloudflare API token used for ACME DNS-01 challenges."""
+    _require_keyring().set_password(_KEYRING_SERVICE, _CLOUDFLARE_TOKEN_ID, token)
+
+
+_ACME_SETTINGS_FIELDS = (
+    "contact_email",
+    "country",
+    "state",
+    "locality",
+    "organization_name",
+    "organization_unit",
+)
+
+
+def get_acme_settings() -> dict[str, Any]:
+    """Return non-secret ACME settings: contact email plus the CSR subject
+    fields the iLO's certificate-signing-request form asks for."""
+    defaults = dict.fromkeys(_ACME_SETTINGS_FIELDS, "")
+    path = _acme_settings_path()
+    if not path.exists():
+        return defaults
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return defaults
+    return {field: str(data.get(field) or "") for field in _ACME_SETTINGS_FIELDS}
+
+
+def save_acme_settings(fields: dict[str, Any]) -> dict[str, Any]:
+    """Persist non-secret ACME settings."""
+    settings = {field: str(fields.get(field) or "").strip() for field in _ACME_SETTINGS_FIELDS}
+    path = _acme_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return settings
 
 
 def _validate(fields: dict[str, Any]) -> dict[str, Any]:

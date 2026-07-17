@@ -52,6 +52,7 @@
     transition: border-color .15s, color .15s, background .15s;
   }
   button:hover:not(:disabled) { border-color: var(--amber-dim); color: var(--amber); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
   button:focus-visible, input:focus-visible, select:focus-visible {
     outline: 2px solid var(--amber); outline-offset: 1px;
   }
@@ -101,7 +102,7 @@
     display: none; width: 15px; height: 15px;
     align-items: center; justify-content: center;
   }
-  .cert-badge.visible { display: inline-flex; }
+  .cert-badge.visible { display: inline-flex; cursor: pointer; }
   .cert-badge svg { width: 15px; height: 15px; }
   .cert-badge.ok { color: var(--green); }
   .cert-badge.warn { color: var(--amber); }
@@ -202,6 +203,12 @@
   <header>
     <div class="brand"><b>iLO</b> · CONSOLE LAUNCHER</div>
     <div class="rail-spacer"></div>
+    <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
     <button id="btn-edit-order">Edit Order</button>
     <button id="btn-add" class="primary">+ Add server</button>
   </header>
@@ -298,6 +305,69 @@
         <button type="button" id="confirm-cancel">Cancel</button>
         <button class="danger" id="confirm-delete" type="button">Delete</button>
       </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="settings-overlay" hidden>
+    <form class="dialog" id="settings-form">
+      <h1>Settings</h1>
+      <p style="margin: 0 0 4px; font-size: 12px; color: var(--ink-dim);">
+        Needed to renew iLO 3 certificates via Let's Encrypt (DNS-01 through Cloudflare).
+      </p>
+      <label for="acme-email">Contact email <span style="text-transform:none">(optional)</span></label>
+      <input id="acme-email" name="contact_email" type="email" autocomplete="off">
+      <label for="cloudflare-token">Cloudflare API token</label>
+      <input id="cloudflare-token" name="token" type="password" autocomplete="off">
+      <p id="cloudflare-token-hint" style="margin: 5px 0 0; font-size: 11px; color: var(--ink-dim);"></p>
+      <p style="margin: 18px 0 4px; font-size: 12px; color: var(--ink-dim);">
+        Certificate-signing-request details, sent to the iLO exactly as its own
+        certificate page asks for them.
+      </p>
+      <div class="row2">
+        <div>
+          <label for="acme-country">Country (2-letter)</label>
+          <input id="acme-country" name="country" placeholder="US" maxlength="2" autocomplete="off">
+        </div>
+        <div>
+          <label for="acme-state">State</label>
+          <input id="acme-state" name="state" autocomplete="off">
+        </div>
+      </div>
+      <label for="acme-locality">City / locality</label>
+      <input id="acme-locality" name="locality" autocomplete="off">
+      <div class="row2">
+        <div>
+          <label for="acme-org">Organization</label>
+          <input id="acme-org" name="organization_name" autocomplete="off">
+        </div>
+        <div>
+          <label for="acme-org-unit">Organizational unit</label>
+          <input id="acme-org-unit" name="organization_unit" autocomplete="off">
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="settings-cancel">Cancel</button>
+        <button class="primary" id="settings-save" type="submit">Save</button>
+      </div>
+      <div class="err" id="settings-err"></div>
+    </form>
+  </div>
+
+  <div class="overlay" id="cert-overlay" hidden>
+    <div class="dialog">
+      <h1>Certificate</h1>
+      <p id="cert-info" style="font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); white-space: pre-line;"></p>
+      <div id="cert-renew-form">
+        <label for="cert-password">Password <span style="text-transform:none">(for RIBCL login)</span></label>
+        <input id="cert-password" type="password" autocomplete="off">
+        <p id="cert-password-hint" style="margin: 5px 0 0; font-size: 11px; color: var(--ink-dim);"></p>
+      </div>
+      <p id="cert-progress" style="margin-top: 14px; font-family: var(--mono); font-size: 12px; color: var(--amber); min-height: 16px;"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cert-close">Close</button>
+        <button class="primary" id="cert-renew" type="button">Renew via Let's Encrypt</button>
+      </div>
+      <div class="err" id="cert-err"></div>
     </div>
   </div>
 

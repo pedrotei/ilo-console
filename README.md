@@ -139,6 +139,42 @@ console page is a URL query string, and a password has no business landing
 in browser history or a server access log — so browser-launched consoles
 still prompt for it every time regardless of what's saved.
 
+### Certificate monitoring + renewal (iLO 3)
+
+Every saved iLO 3 server's HTTPS certificate is checked once a minute in the
+background (`launcher/certmonitor.py`) — a lock icon on its row shows OK
+(green), expiring within 14 days or self-signed (amber), or expired/unreachable
+(red). Clicking that icon opens a dialog with the certificate's current
+subject/issuer/validity and a **Renew via Let's Encrypt** button (hidden right
+after a successful renewal, since there's nothing left to do until the next
+one's due).
+
+Renewal gets a real certificate onto the iLO end to end: it asks the iLO to
+generate a CSR, satisfies Let's Encrypt's **DNS-01** challenge by creating the
+`_acme-challenge` TXT record via the **Cloudflare API** (iLO hostnames are
+typically internal, so HTTP-01 isn't viable), gets the certificate issued,
+imports it, and resets the iLO's management processor so the new certificate
+actually takes effect (~30-60s, during which the iLO is briefly unreachable —
+the managed server itself is unaffected). Progress streams live into the
+dialog.
+
+**One-time setup**, via the gear icon in the launcher header:
+- A **Cloudflare API token** (Zone → DNS → Edit + Zone → Zone → Read,
+  scoped to the zone covering your iLO hostnames) — saved to the OS keyring,
+  same as server passwords.
+- **Contact email** (optional, used for the Let's Encrypt account) and the
+  **CSR subject fields** (country/state/locality/organization) the iLO's own
+  certificate form asks for.
+
+This is implemented entirely on the same `/json/*` HTTP API the rest of
+`ilo3console` already speaks (`ilo3console/session.py`'s `request_csr`,
+`import_certificate`, `reset_ilo`) plus a small hand-rolled ACME v2 client
+(`ilo3console/acme.py`) and Cloudflare DNS client (`launcher/cloudflare.py`) —
+no RIBCL, no extra dependencies beyond `cryptography` (already required for
+`ilo3console`). See [docs/PROTOCOL_ILO3.md](docs/PROTOCOL_ILO3.md)'s
+"Certificate management" section for the full request/response shapes,
+confirmed against live hardware.
+
 ## iLO 3 (`ilo3console/`)
 
 - `crypto.py` — RC4 + AES-OFB keystream ciphers
@@ -151,6 +187,10 @@ still prompt for it every time regardless of what's saved.
 - `client.py` — orchestrates a full session
 - `desktop.py` + `web/` — native desktop app, connects directly
 - `bridge.py` + `png.py` — WebSocket bridge for the in-browser UI
+- `certcheck.py` — read-only TLS certificate inspection (expiry, issuer)
+- `acme.py` — hand-rolled ACME v2 (RFC 8555) client for Let's Encrypt
+- `certrenew.py` — orchestrates `session.py`'s CSR/import/reset calls + `acme.py`
+  + a caller-supplied DNS-01 provider into one certificate renewal
 
 ```bash
 .venv/bin/python -m ilo3console.desktop --host ilo.example --user Administrator

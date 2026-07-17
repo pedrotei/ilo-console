@@ -74,6 +74,18 @@ def _run_once() -> None:
             _statuses[server["id"]] = result
 
 
+def check_now(server_id: str) -> None:
+    """Refresh one server's cached status immediately, out of band from the
+    once-a-minute loop -- used right after a certificate renewal so the UI
+    doesn't have to wait up to 60s to see the result."""
+    server = store.get_server(server_id)
+    if server is None or server.get("generation") != "ilo3":
+        return
+    result = _check_one(server)
+    with _lock:
+        _statuses[server_id] = result
+
+
 def _loop() -> None:
     while True:
         _run_once()

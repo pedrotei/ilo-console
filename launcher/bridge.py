@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -26,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import certmonitor, store
+from . import certmonitor, renewal, store
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -124,6 +125,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, store.load_servers())
         elif path == "/api/cert-status":
             self._json(HTTPStatus.OK, certmonitor.get_statuses())
+        elif path == "/api/acme-settings":
+            settings = store.get_acme_settings()
+            settings["has_cloudflare_token"] = bool(store.get_cloudflare_token())
+            self._json(HTTPStatus.OK, settings)
+        elif path.startswith("/api/renewal-status/"):
+            job_id = path.removeprefix("/api/renewal-status/")
+            status = renewal.get_job_status(job_id)
+            if status is None:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "unknown job"})
+                return
+            self._json(HTTPStatus.OK, status)
         else:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -155,6 +167,24 @@ class _Handler(BaseHTTPRequestHandler):
             if server.get("username"):
                 qs += f"&user={server['username']}"
             self._json(HTTPStatus.OK, {"url": f"http://{host}:{port}/?{qs}"})
+        elif path == "/api/acme-settings":
+            self._json(HTTPStatus.OK, store.save_acme_settings(self._read_json_body()))
+        elif path == "/api/cloudflare-token":
+            token = str(self._read_json_body().get("token") or "")
+            if not token:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "token is required"})
+                return
+            store.set_cloudflare_token(token)
+            self._json(HTTPStatus.OK, {"ok": True})
+        elif path.startswith("/api/renew/"):
+            server_id = path.removeprefix("/api/renew/")
+            password = self._read_json_body().get("password") or None
+            try:
+                job_id = renewal.start_renewal(server_id, password)
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            self._json(HTTPStatus.OK, {"job_id": job_id})
         else:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -204,6 +234,12 @@ def run(host: str, port: int) -> None:
 
 def main() -> None:
     """Parse CLI args and run the launcher's local web server."""
+    # Errors (e.g. a failed Cloudflare API call during certificate renewal)
+    # always print; set ILO_CONSOLE_DEBUG=1 for per-request detail too.
+    logging.basicConfig(
+        level=logging.DEBUG if os.environ.get("ILO_CONSOLE_DEBUG") else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(description="iLO console launcher (server list)")
     parser.add_argument(
         "--listen", default="127.0.0.1:8079", help="host:port to listen on"

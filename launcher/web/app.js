@@ -19,6 +19,16 @@ const ui = {
   dangerZone: $("danger-zone"), btnDelete: $("btn-delete"),
   confirmOverlay: $("confirm-overlay"), confirmText: $("confirm-text"),
   confirmCancel: $("confirm-cancel"), confirmDelete: $("confirm-delete"),
+  btnSettings: $("btn-settings"), settingsOverlay: $("settings-overlay"),
+  settingsForm: $("settings-form"), acmeEmail: $("acme-email"),
+  acmeCountry: $("acme-country"), acmeState: $("acme-state"), acmeLocality: $("acme-locality"),
+  acmeOrg: $("acme-org"), acmeOrgUnit: $("acme-org-unit"),
+  cloudflareToken: $("cloudflare-token"), cloudflareTokenHint: $("cloudflare-token-hint"),
+  settingsCancel: $("settings-cancel"), settingsErr: $("settings-err"),
+  certOverlay: $("cert-overlay"), certInfo: $("cert-info"),
+  certPassword: $("cert-password"), certPasswordHint: $("cert-password-hint"),
+  certProgress: $("cert-progress"), certClose: $("cert-close"), certRenew: $("cert-renew"),
+  certErr: $("cert-err"),
 };
 
 let servers = [];
@@ -83,6 +93,55 @@ async function apiGetCertStatuses() {
   return res.json();
 }
 
+async function apiGetAcmeSettings() {
+  if (isNative()) return window.pywebview.api.get_acme_settings();
+  const res = await fetch("/api/acme-settings");
+  return res.json();
+}
+
+async function apiSaveAcmeSettings(fields) {
+  if (isNative()) return window.pywebview.api.save_acme_settings(fields);
+  const res = await fetch("/api/acme-settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "save failed");
+  return data;
+}
+
+async function apiSaveCloudflareToken(token) {
+  if (isNative()) return window.pywebview.api.save_cloudflare_token(token);
+  const res = await fetch("/api/cloudflare-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "save failed");
+  return data;
+}
+
+// Normalizes both transports to {ok, job_id} / {ok: false, error}.
+async function apiStartRenewal(serverId, password) {
+  if (isNative()) return window.pywebview.api.start_renewal(serverId, password || null);
+  const res = await fetch(`/api/renew/${serverId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  const data = await res.json();
+  if (!res.ok) return { ok: false, error: data.error || "couldn't start renewal" };
+  return { ok: true, job_id: data.job_id };
+}
+
+async function apiGetRenewalStatus(jobId) {
+  if (isNative()) return window.pywebview.api.get_renewal_status(jobId);
+  const res = await fetch(`/api/renewal-status/${jobId}`);
+  return res.json();
+}
+
 // -- rendering ----------------------------------------------------------
 
 const GENERATION_LABEL = { ilo3: "iLO 3", ilo100: "iLO 100" };
@@ -142,6 +201,12 @@ function renderCertBadge(node, server) {
       `Certificate OK -- ${status.days_remaining} day(s) left (as of ${checkedAt})\n` +
       `Subject: ${status.subject}\nIssuer: ${status.issuer}${status.self_signed ? " (self-signed)" : ""}\n` +
       `Expires: ${status.not_after}`;
+  }
+  if (status.reachable) {
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation(); // don't also trigger the row's click-to-connect
+      openCertDialog(server, status);
+    });
   }
 }
 
@@ -373,6 +438,145 @@ ui.confirmDelete.addEventListener("click", async () => {
   } catch (err) {
     alert(`Couldn't delete server: ${err.message || err}`);
     closeConfirm();
+  }
+});
+
+// -- settings (Cloudflare token / ACME contact email) ----------------------
+
+ui.btnSettings.addEventListener("click", async () => {
+  ui.settingsErr.textContent = "";
+  ui.settingsForm.reset();
+  try {
+    const settings = await apiGetAcmeSettings();
+    ui.acmeEmail.value = settings.contact_email || "";
+    ui.acmeCountry.value = settings.country || "";
+    ui.acmeState.value = settings.state || "";
+    ui.acmeLocality.value = settings.locality || "";
+    ui.acmeOrg.value = settings.organization_name || "";
+    ui.acmeOrgUnit.value = settings.organization_unit || "";
+    ui.cloudflareTokenHint.textContent = settings.has_cloudflare_token
+      ? "A token is already saved. Leave blank to keep it, or type a new one to replace it."
+      : "Needed so this app can create the _acme-challenge DNS record.";
+  } catch (err) {
+    ui.settingsErr.textContent = err.message || String(err);
+  }
+  ui.settingsOverlay.hidden = false;
+});
+ui.settingsCancel.addEventListener("click", () => { ui.settingsOverlay.hidden = true; });
+ui.settingsOverlay.addEventListener("click", (e) => {
+  if (e.target === ui.settingsOverlay) ui.settingsOverlay.hidden = true;
+});
+ui.settingsForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  ui.settingsErr.textContent = "";
+  try {
+    await apiSaveAcmeSettings({
+      contact_email: ui.acmeEmail.value.trim(),
+      country: ui.acmeCountry.value.trim(),
+      state: ui.acmeState.value.trim(),
+      locality: ui.acmeLocality.value.trim(),
+      organization_name: ui.acmeOrg.value.trim(),
+      organization_unit: ui.acmeOrgUnit.value.trim(),
+    });
+    if (ui.cloudflareToken.value) {
+      await apiSaveCloudflareToken(ui.cloudflareToken.value);
+    }
+    ui.settingsOverlay.hidden = true;
+  } catch (err) {
+    ui.settingsErr.textContent = err.message || String(err);
+  }
+});
+
+// -- certificate / renewal dialog -------------------------------------------
+
+let certDialogServer = null;
+let renewPollHandle = null;
+// server id -> job id, for renewals still running in the background -- keeps
+// the Renew button correctly disabled (and polling resumed) if the dialog is
+// closed and reopened mid-renewal, instead of forgetting about it and
+// allowing a second concurrent job for the same server.
+const activeRenewals = {};
+
+function openCertDialog(server, status) {
+  certDialogServer = server;
+  ui.certErr.textContent = "";
+  ui.certProgress.textContent = "";
+  ui.certPassword.value = "";
+  ui.certPasswordHint.textContent = server.has_saved_password
+    ? "A saved password will be used if you leave this blank."
+    : "";
+  ui.certInfo.textContent = [
+    `Subject: ${status.subject}`,
+    `Issuer: ${status.issuer}${status.self_signed ? " (self-signed)" : ""}`,
+    `Valid: ${status.not_before} to ${status.not_after}`,
+  ].join("\n");
+  ui.certRenew.hidden = false;
+  const activeJobId = activeRenewals[server.id];
+  if (activeJobId) {
+    ui.certRenew.disabled = true;
+    pollRenewal(activeJobId, server.id);
+  } else {
+    ui.certRenew.disabled = false;
+  }
+  ui.certOverlay.hidden = false;
+}
+
+function closeCertDialog() {
+  ui.certOverlay.hidden = true;
+  certDialogServer = null;
+  // Only stops this dialog's own polling loop -- activeRenewals (and the
+  // job itself, server-side) is untouched, so reopening picks it back up.
+  if (renewPollHandle) {
+    clearTimeout(renewPollHandle);
+    renewPollHandle = null;
+  }
+}
+ui.certClose.addEventListener("click", closeCertDialog);
+ui.certOverlay.addEventListener("click", (e) => { if (e.target === ui.certOverlay) closeCertDialog(); });
+
+async function pollRenewal(jobId, serverId) {
+  let status;
+  try {
+    status = await apiGetRenewalStatus(jobId);
+  } catch (err) {
+    ui.certErr.textContent = err.message || String(err);
+    ui.certRenew.disabled = false;
+    delete activeRenewals[serverId];
+    return;
+  }
+  ui.certProgress.textContent = status.message || "";
+  if (status.error) {
+    ui.certErr.textContent = status.error;
+    ui.certRenew.disabled = false;
+    delete activeRenewals[serverId];
+    return;
+  }
+  if (status.done) {
+    await refreshCertStatuses();
+    // Succeeded -- nothing more to do right now, so the button goes away
+    // rather than just re-enabling (openCertDialog brings it back next time
+    // the dialog is opened, e.g. once the cert is due for renewal again).
+    ui.certRenew.hidden = true;
+    delete activeRenewals[serverId];
+    return;
+  }
+  renewPollHandle = setTimeout(() => pollRenewal(jobId, serverId), 2000);
+}
+
+ui.certRenew.addEventListener("click", async () => {
+  if (!certDialogServer) return;
+  const serverId = certDialogServer.id;
+  ui.certErr.textContent = "";
+  ui.certProgress.textContent = "";
+  ui.certRenew.disabled = true;
+  try {
+    const result = await apiStartRenewal(serverId, ui.certPassword.value || null);
+    if (!result.ok) throw new Error(result.error || "couldn't start renewal");
+    activeRenewals[serverId] = result.job_id;
+    pollRenewal(result.job_id, serverId);
+  } catch (err) {
+    ui.certErr.textContent = err.message || String(err);
+    ui.certRenew.disabled = false;
   }
 });
 

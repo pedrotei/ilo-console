@@ -14,12 +14,13 @@ put on a command line.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from . import certmonitor, store
+from . import certmonitor, renewal, store
 
 try:
     import webview
@@ -64,6 +65,35 @@ class Api:
         by server id. Background thread refreshes this once a minute."""
         return certmonitor.get_statuses()
 
+    def get_acme_settings(self) -> dict:
+        """Return non-secret ACME settings (contact email) plus whether a
+        Cloudflare API token is currently saved."""
+        settings = store.get_acme_settings()
+        settings["has_cloudflare_token"] = bool(store.get_cloudflare_token())
+        return settings
+
+    def save_acme_settings(self, fields: dict) -> dict:
+        """Persist non-secret ACME settings (contact email)."""
+        return store.save_acme_settings(fields)
+
+    def save_cloudflare_token(self, token: str) -> dict:
+        """Save the Cloudflare API token used for ACME DNS-01 challenges."""
+        store.set_cloudflare_token(token)
+        return {"ok": True}
+
+    def start_renewal(self, server_id: str, password: str | None = None) -> dict:
+        """Kick off a certificate-renewal job for a saved iLO 3 server."""
+        try:
+            job_id = renewal.start_renewal(server_id, password)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "job_id": job_id}
+
+    def get_renewal_status(self, job_id: str) -> dict:
+        """Poll a renewal job's latest status."""
+        status = renewal.get_job_status(job_id)
+        return status if status is not None else {"error": "unknown job"}
+
     def launch(self, server_id: str) -> dict:
         """Open the given server's console in its own native window.
 
@@ -94,6 +124,12 @@ class Api:
 
 def main() -> None:
     """Open the native launcher window."""
+    # Errors (e.g. a failed Cloudflare API call during certificate renewal)
+    # always print; set ILO_CONSOLE_DEBUG=1 for per-request detail too.
+    logging.basicConfig(
+        level=logging.DEBUG if os.environ.get("ILO_CONSOLE_DEBUG") else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
     if webview is None:
         raise SystemExit(
             "pywebview is not installed. Run: pip install pywebview\n"
