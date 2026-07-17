@@ -67,6 +67,37 @@ def _acme_settings_path() -> Path:
     return _config_dir() / "acme_settings.json"
 
 
+def _window_geometry_path() -> Path:
+    return _config_dir() / "window_geometry.json"
+
+
+def get_window_geometry() -> dict[str, int] | None:
+    """Return the last-saved native window position/size, or None if there
+    isn't one yet (first run, or the saved file is missing/corrupt)."""
+    path = _window_geometry_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        return {k: int(data[k]) for k in ("x", "y", "width", "height")}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_window_geometry(x: int, y: int, width: int, height: int) -> None:
+    """Persist the native window's position/size for next launch."""
+    path = _window_geometry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps({"x": x, "y": y, "width": width, "height": height}), encoding="utf-8"
+    )
+    tmp.replace(path)
+
+
 def acme_account_key_path() -> Path:
     """Where the ACME account's private key is persisted (created on first
     use by ``ilo3console.acme.AcmeAccountKey.load_or_create``)."""

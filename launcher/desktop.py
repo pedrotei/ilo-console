@@ -14,6 +14,7 @@ put on a command line.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -136,15 +137,27 @@ def main() -> None:
             "(Linux also needs a WebKitGTK or Qt WebEngine backend.)"
         )
     certmonitor.start()
-    webview.create_window(
+    geometry = store.get_window_geometry()
+    window = webview.create_window(
         "iLO Console Launcher",
         os.path.join(_WEB_DIR, "index.html"),
         js_api=Api(),
-        width=760,
-        height=640,
+        width=geometry["width"] if geometry else 760,
+        height=geometry["height"] if geometry else 640,
+        x=geometry["x"] if geometry else None,
+        y=geometry["y"] if geometry else None,
         min_size=(560, 420),
         background_color="#0b0e10",
     )
+
+    def _save_geometry() -> None:
+        # Best-effort -- a window that's been minimized/destroyed in an
+        # unusual way shouldn't take the whole app down on exit.
+        with contextlib.suppress(Exception):
+            store.save_window_geometry(window.x, window.y, window.width, window.height)
+
+    window.events.closing += _save_geometry
+
     webview.start()
 
 

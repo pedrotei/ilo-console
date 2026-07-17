@@ -223,3 +223,19 @@ def test_remove_server_deletes_saved_password():
     )
     store.remove_server(server["id"])
     assert store.get_password(server["id"]) is None
+
+
+def test_get_window_geometry_returns_none_when_never_saved():
+    assert store.get_window_geometry() is None
+
+
+def test_save_and_get_window_geometry_round_trips():
+    store.save_window_geometry(10, 20, 760, 640)
+    assert store.get_window_geometry() == {"x": 10, "y": 20, "width": 760, "height": 640}
+
+
+def test_get_window_geometry_returns_none_for_corrupt_file():
+    path = store._window_geometry_path()  # noqa: SLF001
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json", encoding="utf-8")
+    assert store.get_window_geometry() is None
