@@ -144,6 +144,12 @@ def main() -> None:
         js_api=Api(),
         width=geometry["width"] if geometry else 760,
         height=geometry["height"] if geometry else 640,
+        # Restoring x/y is a no-op on GNOME Shell/Mutter specifically --
+        # confirmed directly (a plain GTK window's own .move(x, y) request
+        # is silently ignored, get_position() reports the same compositor-
+        # chosen spot regardless of what's asked for). Not a bug here; GNOME
+        # deliberately doesn't let apps position themselves. Left in since
+        # window managers that *do* honor positioning will restore correctly.
         x=geometry["x"] if geometry else None,
         y=geometry["y"] if geometry else None,
         min_size=(560, 420),
@@ -155,20 +161,26 @@ def main() -> None:
     # contexts, but events.closing runs *synchronously on that same main
     # thread* (unlike resized/moved, which run on a worker thread), so
     # calling them from a closing handler deadlocks the window on close.
-    # Tracking the last-known geometry via resized/moved instead (which
-    # hand the new values straight to the callback, no property access
-    # needed) and just persisting that cache on closing avoids it entirely.
+    # Tracking the last-known geometry via resized/moved instead and just
+    # persisting that cache on closing avoids it. Note the (width, height)/
+    # (x, y) those two events hand the callback directly come from GDK's
+    # configure-event, which is documented as unreliable for position (it
+    # reported (0, 0) here every time) -- so this re-queries window.x/.y/
+    # .width/.height itself instead of trusting those arguments; still safe
+    # here since, unlike closing, these handlers run on a worker thread.
     last_geometry: dict[str, int | None] = dict(geometry) if geometry else dict.fromkeys(
         ("x", "y", "width", "height")
     )
 
-    def _on_resized(width: int, height: int) -> None:
-        last_geometry["width"] = width
-        last_geometry["height"] = height
+    def _on_resized(width: int, height: int) -> None:  # noqa: ARG001
+        with contextlib.suppress(Exception):
+            last_geometry["width"] = window.width
+            last_geometry["height"] = window.height
 
-    def _on_moved(x: int, y: int) -> None:
-        last_geometry["x"] = x
-        last_geometry["y"] = y
+    def _on_moved(x: int, y: int) -> None:  # noqa: ARG001
+        with contextlib.suppress(Exception):
+            last_geometry["x"] = window.x
+            last_geometry["y"] = window.y
 
     def _save_geometry() -> None:
         if None in last_geometry.values():
