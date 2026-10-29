@@ -23,7 +23,7 @@ ilo100-console-web = "ilo100console.bridge:main"
 ilo3 = ["cryptography>=3.4"]     # AES/legacy-TLS; only needed by ilo3console
 browser = ["websockets>=12"]     # WebSocket bridge for the in-browser UI
 desktop = ["pywebview>=5"]       # native window; connects to the iLO directly
-launcher = ["keyring>=24"]       # OS keyring-backed saved passwords (launcher only)
+launcher = ["keyring>=24", "cryptography>=3.4"]  # keyring + iLO 3 certificate renewal
 # Everything above, for a normal end-user install: pipx install ".[all]"
 all = ["ilo-console[ilo3,browser,desktop,launcher]"]
 dev = ["pytest>=7", "ilo-console[ilo3,browser,desktop,launcher]"]
