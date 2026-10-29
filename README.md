@@ -250,6 +250,32 @@ this exact one isn't found):
 sudo apt install python3-gi gir1.2-webkit2-4.1
 ```
 
+**Install or upgrade from a local checkout** — Python 3.10 or newer is
+required. For example, with the source in `~/Projects/ilo-console` and the
+virtual environment in `~/apps/ilo-console`, create the environment once and
+install the browser launcher and browser bridges:
+
+```bash
+cd ~/Projects/ilo-console
+python3 -m venv ~/apps/ilo-console
+~/apps/ilo-console/bin/python -m pip install --upgrade -e '.[launcher,browser]'
+```
+
+After updating the checkout, rerun the `pip install` command to upgrade the
+installed dependencies and entry points. Start the launcher with:
+
+```bash
+~/apps/ilo-console/bin/ilo-console-launcher-web --listen 127.0.0.1:8079
+```
+
+For the native Linux launcher, create the environment with system site packages
+so Python can see the OS GTK bindings, and install the `desktop` extra:
+
+```bash
+python3 -m venv --system-site-packages ~/apps/ilo-console
+~/apps/ilo-console/bin/python -m pip install --upgrade -e '.[launcher,desktop]'
+```
+
 **This is why `pipx` doesn't work for the native apps on Linux**, and is the
 one case where a plain venv is required instead: `pipx`'s venvs (like a
 default `python3 -m venv`) are isolated from system site-packages, so even

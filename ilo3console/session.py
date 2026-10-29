@@ -36,6 +36,7 @@ def legacy_tls_context() -> ssl.SSLContext:
     Disables certificate verification (self-signed iLO cert), allows unsafe
     legacy renegotiation, drops the minimum protocol to TLSv1.0, and lowers the
     cipher security level so OpenSSL 3 will negotiate the old suites iLO offers.
+    Cap the maximum at TLS 1.1 because this iLO rejects newer ClientHellos.
     """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
@@ -43,6 +44,7 @@ def legacy_tls_context() -> ssl.SSLContext:
     # Allow TLSv1.0 (Python >=3.10 gates this behind minimum_version).
     with contextlib.suppress(ValueError, AttributeError):
         ctx.minimum_version = ssl.TLSVersion.TLSv1
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_1
     # Permit servers that don't advertise RFC 5746 secure renegotiation.
     if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
         ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT

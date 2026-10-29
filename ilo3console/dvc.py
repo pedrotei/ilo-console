@@ -1,18 +1,36 @@
 """The DVC video decoder — iLO 3's proprietary console video codec.
 
-The console channel delivers video as a bit-level stream that a 48-state machine
-decodes into 16x16 (or 16x8 "half height") pixel blocks, with a 17-entry colour
-LRU cache, run-length and block-repeat coding, and embedded side-band commands
-(power/health status, on-screen text, framerate, and — crucially — the command
-that turns stream encryption on and selects the cipher).
+This module implements a stateful bit-stream decoder for Hewlett Packard
+Enterprise iLO 3 management console video protocol. The console channel
+delivers video as a compressed bit-level stream that a 48-state finite state
+machine decodes into 16x16 (or 16x8 "half height") pixel blocks.
+
+Features:
+    - Run-length encoding with block-repeat coding for efficient compression
+    - 17-entry colour LRU cache for palette management
+    - Embedded side-band commands for power/health status, on-screen text,
+      framerate reporting, and stream encryption control
+    - Support for multiple color depths (3-5 bits per color)
+    - Half-height mode detection for wide resolutions
 
 See docs/PROTOCOL_ILO3.md's "DVC video codec" section for the full state
 machine and opcode reference. Decoder state (including lookup tables like
 ``bits_to_read``/``next_1``) is kept per-instance so multiple sessions can
 decode independently.
 
-Feed one *plaintext* byte at a time via :meth:`DvcDecoder.feed`. Decoded blocks
-land in the :class:`Framebuffer`; side-band events go to a :class:`DvcController`.
+Usage:
+    >>> from ilo3console.dvc import DvcDecoder, Framebuffer, DvcController
+    >>> fb = Framebuffer(width=1024, height=768)
+    >>> controller = MyController()  # subclass to handle events
+    >>> decoder = DvcDecoder(fb, controller)
+    >>> for byte in encrypted_stream:
+    ...     result = decoder.feed(byte)
+    ...     if result == 1:
+    ...         print("Stream exited")
+
+Feed one *plaintext* (decrypted) byte at a time via :meth:`DvcDecoder.feed`.
+Decoded pixel blocks land in the :class:`Framebuffer`; side-band events go to
+a :class:`DvcController` instance.
 """
 
 from __future__ import annotations
@@ -84,20 +102,41 @@ _GETMASK = [0, 1, 3, 7, 15, 31, 63, 127, 255]
 class Framebuffer:
     """A flat RGB framebuffer that receives decoded pixel blocks.
 
-    Pixels are stored as ``0x00RRGGBB`` ints (as produced by the colour remap
-    table). ``generation`` bumps on every resize/clear so consumers can detect a
-    mode change.
+    This class provides a simple row-major buffer for storing decoded video
+    frames. Pixels are stored as 24-bit integers in ``0x00RRGGBB`` format
+    (as produced by the colour remap table). The ``generation`` counter bumps
+    on every resize/clear operation, allowing consumers to detect mode changes.
+
+    Attributes:
+        width: Current framebuffer width in pixels
+        height: Current framebuffer height in pixels
+        pixels: Flat list of pixel values (row-major order)
+        generation: Counter that increments on resize/clear for change detection
+
+    Example:
+        >>> fb = Framebuffer(width=1024, height=768)
+        >>> fb.resize(800, 600)  # Change resolution
+        >>> fb.clear()  # Clear to black
     """
 
     def __init__(self, width: int = 0, height: int = 0) -> None:
+        """Initialize an empty framebuffer.
+
+        Args:
+            width: Initial width in pixels (default 0 for dynamic sizing)
+            height: Initial height in pixels (default 0 for dynamic sizing)
+        """
         self.width = width
         self.height = height
         self.pixels = [0] * (width * height)
         self.generation = 0
 
     def resize(self, width: int, height: int) -> None:
-        """Resize to a new width/height, zeroing all pixels and bumping
-        ``generation``.
+        """Resize to a new width/height, zeroing all pixels and bumping ``generation``.
+
+        Args:
+            width: New width in pixels
+            height: New height in pixels
         """
         self.width = width
         self.height = height
@@ -105,12 +144,28 @@ class Framebuffer:
         self.generation += 1
 
     def clear(self) -> None:
-        """Zero all pixels at the current size and bump ``generation``."""
+        """Zero all pixels at the current size and bump ``generation``.
+
+        This is typically called when receiving a clear-screen command from
+        the decoder.
+        """
         self.pixels = [0] * (self.width * self.height)
         self.generation += 1
 
-    def paste_block(self, block, x: int, y: int, w: int, h: int) -> None:
-        """Copy a ``w``-wide, ``h``-tall block (row-major in ``block``) at (x,y)."""
+    def paste_block(self, block: list[int], x: int, y: int, w: int, h: int) -> None:
+        """Copy a ``w``-wide, ``h``-tall block (row-major in ``block``) at (x,y).
+
+        Args:
+            block: Source pixel data (16-wide rows, even for half-height blocks)
+            x: Destination x position
+            y: Destination y position
+            w: Width of the block to copy
+            h: Height of the block to copy
+
+        Note:
+            The source ``block`` is always treated as 16 pixels wide per row.
+            Boundary checking prevents writes outside the framebuffer.
+        """
         fb_w = self.width
         for row in range(h):
             fy = y + row
@@ -124,7 +179,16 @@ class Framebuffer:
                     self.pixels[dst + col] = block[src + col]
 
     def to_rgb_bytes(self) -> bytes:
-        """Serialise as packed RGB (3 bytes/pixel), row-major."""
+        """Serialise as packed RGB (3 bytes/pixel), row-major.
+
+        Returns:
+            Bytes in RGB order per pixel (red byte, then green, then blue).
+
+        Example:
+            >>> fb = Framebuffer(width=2, height=2)
+            >>> fb.pixels = [0xFF0000FF, 0x00FF00FF, 0x0000FFFF, 0xFFFFFFFF]
+            >>> rgb_bytes = fb.to_rgb_bytes()
+        """
         out = bytearray(self.width * self.height * 3)
         for i, px in enumerate(self.pixels):
             out[i * 3] = (px >> 16) & 0xFF
@@ -136,63 +200,192 @@ class Framebuffer:
 class DvcController:
     """Side-band event sink for the decoder. Override what you care about.
 
-    ``set_cipher`` is the important one: the decoder calls it when the firmware's
-    header/encryption command arrives, and the console channel uses it to switch
-    its keystreams. ``send_ack`` / ``refresh_screen`` let the decoder talk back.
+    This class receives all side-band events from the DVC decoder, including:
+    - Stream encryption cipher selection (critical for console channel)
+    - Server power state changes
+    - Health/status LED updates
+    - Licensing and feature flags from firmware
+    - On-screen text and status messages
+    - Video mode changes (resolution, half-height detection)
+    - Frame completion notifications
+    - Seize/exit events
+
+    ``set_cipher`` is the most important callback: the decoder invokes it when
+    the firmware's header/encryption command arrives, and the console channel
+    uses it to switch its keystreams. ``send_ack`` / ``refresh_screen`` let the
+    decoder talk back to the controller.
+
+    Example:
+        >>> class MyController(DvcController):
+        ...     def set_cipher(self, cipher):
+        ...         print(f"Encryption cipher: {cipher}")
+        ...         self.keystream = init_keystream(cipher)
+        ...     def on_frame(self):
+        ...         display(self.fb.to_rgb_bytes())
+
+    Args:
+        framebuffer: Optional framebuffer to access decoded pixels
+        controller: Optional reference back to the decoder
     """
 
+    def __init__(self, framebuffer: Framebuffer | None = None,
+                 decoder: DvcDecoder | None = None) -> None:
+        self.fb = framebuffer
+        self.decoder = decoder
+
     def set_cipher(self, cipher: int) -> None:
-        """Called when the header/encryption command selects a stream cipher."""
+        """Called when the header/encryption command selects a stream cipher.
+
+        Args:
+            cipher: Cipher type (0=none, 1=RC4, 2=AES128, 3=AES256)
+
+        This is the critical callback for console channel decryption. The
+        keystream initialization should happen here based on the cipher type.
+        """
 
     def send_ack(self) -> None:
-        """Called when the decoder needs the console channel to send an ack."""
+        """Called when the decoder needs the console channel to send an ack.
+
+        Use this to acknowledge received commands or status updates.
+        """
 
     def refresh_screen(self) -> None:
         """Called when the decoder detects a stuck/latched state and wants
         a full redraw.
+
+        Trigger a complete screen refresh, typically by re-reading display
+        memory or clearing and redrawing known content.
         """
 
     def on_power(self, on: bool) -> None:
-        """Called when the server's power state changes."""
+        """Called when the server's power state changes.
+
+        Args:
+            on: True if powered on, False if powered off
+        """
 
     def on_health(self, level: int) -> None:
-        """Called when the server's health/status LED level changes."""
+        """Called when the server's health/status LED level changes.
+
+        Args:
+            level: Health level code from firmware (typically 0-3)
+        """
 
     def on_licensed(self, flags: int) -> None:
-        """Called with the licensing flags reported by the firmware."""
+        """Called with the licensing flags reported by the firmware.
+
+        Args:
+            flags: Bitmask of license features enabled
+        """
 
     def on_flags(self, flags: int) -> None:
-        """Called with miscellaneous firmware feature flags."""
+        """Called with miscellaneous firmware feature flags.
+
+        Args:
+            flags: Bitmask of optional features supported by firmware
+        """
 
     def on_framerate(self, fps: int) -> None:
-        """Called when the firmware reports its target frame rate."""
+        """Called when the firmware reports its target frame rate.
+
+        Args:
+            fps: Target frames per second (typically 30 or 60)
+        """
 
     def on_status(self, field: int, text: str) -> None:
-        """Called with a status-line update for the given field."""
+        """Called with a status-line update for the given field.
+
+        Args:
+            field: Status field index (1-4 typically)
+            text: Status text to display in that field
+        """
 
     def on_text(self, text: str) -> None:
-        """Called with on-screen text decoded from the print channel."""
+        """Called with on-screen text decoded from the print channel.
+
+        Args:
+            text: Raw text string from the print channel
+        """
 
     def on_resize(self, width: int, height: int) -> None:
-        """Called when the video mode changes to a new resolution."""
+        """Called when the video mode changes to a new resolution.
+
+        Args:
+            width: New screen width in pixels
+            height: New screen height in pixels
+        """
 
     def on_frame(self) -> None:
-        """Called when a full frame has been decoded and is ready to display."""
+        """Called when a full frame has been decoded and is ready to display.
+
+        This is invoked periodically during normal decoding, not just at
+        frame boundaries. Use it to trigger periodic screen updates.
+        """
 
     def on_seize(self) -> None:
-        """Called when another client seizes control of the console."""
+        """Called when another client seizes control of the console.
+
+        Handle takeover events by notifying your UI or logging the seizure.
+        """
 
     def on_exit(self) -> None:
-        """Called when the decoder sees the stream-exit command."""
+        """Called when the decoder sees the stream-exit command.
+
+        Clean up resources and stop decoding when the stream ends.
+        """
 
 
 class DvcDecoder:
-    """Stateful DVC bit-stream decoder. Not thread-safe; feed from one thread."""
+    """Stateful DVC bit-stream decoder for iLO 3 console video protocol.
+
+    This decoder implements a 48-state finite state machine that processes
+    the compressed DVC bit-stream, handling run-length encoding, block-repeat
+    coding, colour cache management, and embedded side-band commands.
+
+    Not thread-safe; feed bytes from a single thread only.
+
+    Attributes:
+        fb: Framebuffer instance for decoded pixel blocks
+        ctl: Controller instance for side-band events
+        state: Current FSM state (indices into transition tables)
+        bits_to_read: Per-state bit count lookup table
+        next_1: State transition table for bit=1 (next_0 is implicit)
+        ib_acc: Bit accumulator for partial bytes
+        ib_bcnt: Number of bits accumulated
+        zero_count: Consecutive zero run counter (for RLE detection)
+        block: Current pixel block being filled (256-pixel buffer)
+        pixel_count: Pixels written to current block
+        lastx/lasty: Last decoded block position
+        newx/newy: Next block position from move commands
+        size_x/size_y: Target screen dimensions in blocks
+        cc_active/cc_color/cc_usage/cc_block: Colour LRU cache state
+        color_remap: 5-bit colour palette (32768 entries)
+
+    Args:
+        framebuffer: Framebuffer instance to receive decoded pixels
+        controller: DvcController instance for side-band events
+
+    Example:
+        >>> fb = Framebuffer(width=1024, height=768)
+        >>> controller = MyController()
+        >>> decoder = DvcDecoder(fb, controller)
+        >>> for byte in decrypted_stream:
+        ...     result = decoder.feed(byte)
+        ...     if result == 1:
+        ...         print("Stream ended")
+    """
 
     def __init__(self, framebuffer: Framebuffer, controller: DvcController) -> None:
+        """Initialize the decoder with a framebuffer and controller.
+
+        Args:
+            framebuffer: Framebuffer instance to receive decoded pixel blocks
+            controller: DvcController instance for side-band event callbacks
+        """
         self.fb = framebuffer
         self.ctl = controller
 
+        # Copy lookup tables (per-instance state)
         self.bits_to_read = list(_BITS_TO_READ)
         self.next_1 = list(_NEXT_1)  # entry [31] is mutated as the cache fills
 
@@ -257,6 +450,11 @@ class DvcDecoder:
     # ---- bit-reversal / zero-run tables ------------------------------------
 
     def _init_reversal(self):
+        """Precompute bit-reversal and zero-run lookup tables for 8-bit bytes.
+
+        These tables are used to efficiently extract variable-length codes from
+        the bit stream and detect long runs of zeros (RLE).
+        """
         self.reversal = [0] * 256
         self.left = [0] * 256
         self.right = [0] * 256
@@ -278,6 +476,14 @@ class DvcDecoder:
     # ---- bit input ----------------------------------------------------------
 
     def _add_bits(self, c: int) -> int:
+        """Accumulate a byte into the bit buffer.
+
+        Args:
+            c: Input byte (0-255)
+
+        Returns:
+            4 if too many consecutive zeros detected (→ HUNT state), else 0
+        """
         self.ib_acc |= c << self.ib_bcnt
         self.ib_bcnt += 8
         self.zero_count += self.right[c]
@@ -290,6 +496,11 @@ class DvcDecoder:
         return 0
 
     def _get_bits(self, n: int) -> None:
+        """Extract n bits from the accumulator into ``code``.
+
+        Args:
+            n: Number of bits to extract (1-8)
+        """
         if n == 1:
             self.code = self.ib_acc & 1
             self.ib_acc >>= 1
@@ -306,9 +517,18 @@ class DvcDecoder:
     # ---- colour cache -------------------------------------------------------
 
     def _cache_reset(self):
+        """Clear the colour LRU cache."""
         self.cc_active = 0
 
     def _pixcode_for(self, active: int) -> int:
+        """Determine the next pixcode based on cache activity level.
+
+        Args:
+            active: Number of active colours in cache
+
+        Returns:
+            Next pixcode state (LATCHED, PIXLRU0, PIXCODE1-4)
+        """
         if active < 2:
             return LATCHED
         if active == 2:
@@ -322,6 +542,14 @@ class DvcDecoder:
         return PIXCODE4
 
     def _cache_lru(self, color: int) -> int:
+        """Add a colour to the LRU cache or find an existing entry.
+
+        Args:
+            color: Colour value (5-bit index into palette)
+
+        Returns:
+            1 if colour was found in cache, 0 if added as new entry
+        """
         active = self.cc_active
         idx = 0
         found = 0
@@ -350,6 +578,14 @@ class DvcDecoder:
         return found
 
     def _cache_find(self, index: int) -> int:
+        """Find a colour by its LRU usage index.
+
+        Args:
+            index: Usage level to search for (0 = most recently used)
+
+        Returns:
+            Colour value if found, -1 otherwise
+        """
         active = self.cc_active
         for i in range(active):
             if index == self.cc_usage[i]:
@@ -363,6 +599,11 @@ class DvcDecoder:
         return -1
 
     def _cache_prune(self):
+        """Remove inactive colours from the cache.
+
+        Removes entries with cc_block == 0, compacting the cache and
+        updating usage counters.
+        """
         n = self.cc_active
         i = 0
         while i < n:
@@ -381,6 +622,13 @@ class DvcDecoder:
     # ---- colour depth -------------------------------------------------------
 
     def _build_pixel_table(self, bpc: int):
+        """Build the colour remap table for a given bits-per-color.
+
+        Args:
+            bpc: Bits per color (2-5)
+
+        The table maps 5-bit indices to 16-bit RGB values.
+        """
         n2 = 1 << (bpc * 3)
         t = self.color_remap
         if bpc == 5:
@@ -397,12 +645,21 @@ class DvcDecoder:
                 t[v] = ((v & 0xF) << 6) | ((v & 0xF0) << 15) | ((v & 0xF00) << 18)
 
     def _set_bits_per_color(self, n: int):
+        """Set bits per color from command buffer.
+
+        Args:
+            n: Command argument (actual bpc = 5 - (n & 3))
+        """
         self.bits_per_color = 5 - (n & 3)
         for s in (PIXGREY, PIXRGBR, PIXRGBG, PIXRGBB):
             self.bits_to_read[s] = self.bits_per_color
         self._build_pixel_table(self.bits_per_color)
 
     def _set_half_height(self):
+        """Detect and switch to half-height mode if needed.
+
+        Half-height (8px blocks) is used for very wide resolutions (>1616px).
+        """
         if self.screen_x > 1616:
             # Half-height (8px blocks) is only used on very wide modes; we
             # always accept it rather than warning for incapable hardware.
@@ -418,6 +675,11 @@ class DvcDecoder:
     # ---- block placement ----------------------------------------------------
 
     def _next_block(self, count: int):
+        """Fill and paste the next ``count`` blocks.
+
+        Args:
+            count: Number of blocks to paste (typically 1)
+        """
         paint = self.video_detected
         if self.pixel_count != 0 and self.y_clipped > 0 and self.lasty == self.size_y:
             fill = self.color_remap[0]
@@ -439,11 +701,26 @@ class DvcDecoder:
     # ---- main entry ---------------------------------------------------------
 
     def feed(self, byte: int) -> int:
-        """Process one decrypted stream byte. Returns the process code (0=ok)."""
+        """Process one decrypted stream byte.
+
+        Args:
+            byte: Decrypted plaintext byte from the DVC stream
+
+        Returns:
+            0: Continue processing
+            1: Stream ended (EXIT command received)
+        """
         return self._process_bits(byte & 0xFF)
 
     def _push_pixel(self, value: int) -> bool:
-        """Append one pixel; returns False if the block overflowed (→ LATCHED)."""
+        """Append one pixel to the current block.
+
+        Args:
+            value: Pixel colour value (from colour remap table)
+
+        Returns:
+            True if successful, False if block overflowed (→ LATCHED state)
+        """
         if self.pixel_count >= self.block_height * self.block_width:
             self.next_state = LATCHED
             return False
@@ -452,6 +729,16 @@ class DvcDecoder:
         return True
 
     def _process_bits(self, c: int) -> int:
+        """Main decoding loop for a single input byte.
+
+        Args:
+            c: Input byte (masked to 8 bits)
+
+        Returns:
+            0: Continue processing
+            1: Stream ended
+            6: Internal error (hung state)
+        """
         self._add_bits(c)
         self.count_bytes += 1
         n = 0
@@ -486,7 +773,17 @@ class DvcDecoder:
         return n
 
     def _dispatch(self, st: int) -> bool:
-        """Run the per-state action. Returns False only on a detected hang."""
+        """Execute the action for the current FSM state.
+
+        This is the main state machine dispatch that handles all pixel output,
+        colour cache operations, block movement, and command processing.
+
+        Args:
+            st: Current state index (0-47)
+
+        Returns:
+            True if state transition succeeded, False if hung/detected error
+        """
         if st in (PIXLRU1, PIXLRU0, PIXCODE1, PIXCODE2, PIXCODE3, PIXCODE4):
             if self.cc_active == 1:
                 self.code = self.cc_usage[0]
@@ -683,6 +980,14 @@ class DvcDecoder:
         return True
 
     def _pix_rgbb(self) -> bool:
+        """Complete RGB/grey pixel composition and cache it.
+
+        Handles both RGB (red, green, blue) and grey mode pixels.
+        Updates the colour LRU cache if the new colour is different.
+
+        Returns:
+            True if successful, False if LATCHED state triggered
+        """
         self.blue = self.code
         color = self.red | self.green | self.blue
         if self._cache_lru(color) != 0:
@@ -693,6 +998,22 @@ class DvcDecoder:
         return True
 
     def _dispatch_command(self):
+        """Process a side-band command from the firmware.
+
+        Handles commands 1-16 and 128:
+        - 1: Exit stream
+        - 2: Print channel start
+        - 3: Report framerate
+        - 4/5: Power on/off (5 clears screen)
+        - 6: Clear status line + frame complete
+        - 7: Terminal services (unused headless)
+        - 9: Resync bits
+        - 10: Seize event
+        - 11/13: Set bits per color
+        - 12/13: Set video decryption cipher
+        - 16: Send ACK
+        - 128: Frame complete notification
+        """
         op = self.cmd_last
         if op == 1:
             self.next_state = EXIT
@@ -733,7 +1054,14 @@ class DvcDecoder:
             self.ctl.on_frame()
 
     def _set_video_decryption(self, cipher: int):
-        # 0=none 1=RC4 2=AES128 3=AES256; the controller wires up the keystream.
+        """Set the video stream decryption cipher.
+
+        Args:
+            cipher: Cipher type (0=none, 1=RC4, 2=AES128, 3=AES256)
+
+        The controller wires up the keystream for this cipher type.
+        Invalid cipher values default to none.
+        """
         self.ctl.set_cipher(cipher if cipher in (0, 1, 2, 3) else 0)
 
     def _mode2(self):
