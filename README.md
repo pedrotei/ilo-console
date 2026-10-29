@@ -238,17 +238,35 @@ be pre-installed from PyPI. Installs six commands:
 | `ilo100-console-web` | iLO 100 browser-mode WebSocket bridge |
 
 The **native** apps (`ilo-console-launcher`, `ilo3-console`, `ilo100-console`)
-need `pywebview`, which on Linux needs the OS's own GTK/WebKitGTK Python
-bindings — something `pip` cannot install, since they're system packages, not
-PyPI packages. Windows (10/11) and macOS already have their webview component
-built in (WebView2, WKWebView) and need nothing extra. On Linux, install it
-first (Debian/Ubuntu — package names vary by distro/WebKitGTK version, see
-[pywebview's docs](https://pywebview.flowrl.com/guide/installation.html) if
-this exact one isn't found):
+need `pywebview`. Windows (10/11) and macOS have their webview component built
+in (WebView2, WKWebView). On Linux, pywebview requires a GTK/WebKitGTK or Qt
+backend; choose one of the following. Package names vary by distro and
+WebKitGTK version, so see
+[pywebview's installation guide](https://pywebview.flowrl.com/guide/installation.html)
+if a package is unavailable.
+
+**GTK (system packages):**
 
 ```bash
-sudo apt install python3-gi gir1.2-webkit2-4.1
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1
 ```
+
+WebKit2GTK 2.22 or newer is required. The Python environment must be able to
+import the OS-provided `gi` bindings; on Linux, create the app venv with
+`--system-site-packages` as shown below. Older Ubuntu releases may provide
+`gir1.2-webkit2-4.0` instead of `-4.1`.
+
+**Qt (Python packages):** install pywebview's Qt extra into the app venv. It
+installs PyQt6 and QtWebEngine; GTK/WebKitGTK packages are not needed for this
+backend:
+
+```bash
+~/apps/ilo-console/bin/python -m pip install 'pywebview[qt]'
+```
+
+If both backends are installed, select Qt when starting the native app with
+`PYWEBVIEW_GUI=qt`. Qt wheels may not support older Linux releases, so check
+their Python and glibc compatibility for the target system.
 
 **Install or upgrade from a local checkout** — Python 3.10 or newer is
 required. For example, with the source in `~/Projects/ilo-console` and the
